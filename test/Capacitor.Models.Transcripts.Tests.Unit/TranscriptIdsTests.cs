@@ -95,6 +95,31 @@ public class TranscriptIdsTests {
         await Assert.That(TranscriptIds.MuseRecord(stream, record)).IsNotEqualTo(TranscriptIds.MuseRecord("other", record));
     }
 
+    /// kcap-server's KiroDeterministicIdTests freezes these same four, so a Kiro event and a Kiro hook keep one derivation.
+    [Test]
+    [Arguments("sess-a", "user", "start", "c9c3f93a-ff06-5402-bd3e-0ad79cf30539")]
+    [Arguments("sess-a", "user", "stop", "fbc81412-8661-5396-bb2e-02b213754037")]
+    [Arguments("11111111-2222-3333-4444-555555555555", "agent", "turn", "183cff1b-eb82-55d0-80f8-7a69912ea3c4")]
+    [Arguments("sess-é中:colon", "sc/ope", "kind-4", "6592ad3c-0846-5822-b678-b8c88f38cd3c")]
+    public async Task Kiro_record_is_the_servers_v5_uuid(string sessionId, string key, string kind, string expected) {
+        var id = TranscriptIds.KiroRecord(sessionId, key, kind);
+
+        await Assert.That(id.ToString()).IsEqualTo(expected);
+        await Assert.That(id.Version).IsEqualTo(5);
+    }
+
+    [Test]
+    public async Task Kiro_fallback_hashes_the_line_then_colon_kind() {
+        await Assert.That(TranscriptIds.KiroFallback("{\"kind\":\"Prompt\"}", "user"))
+            .IsEqualTo(new Guid(XxHash128.Hash(Encoding.UTF8.GetBytes("{\"kind\":\"Prompt\"}:user"))));
+    }
+
+    [Test]
+    public async Task Kiro_usage_hashes_the_prefixed_scope_and_anchor() {
+        await Assert.That(TranscriptIds.KiroUsage("sess:agent", "msg-1"))
+            .IsEqualTo(new Guid(XxHash128.Hash(Encoding.UTF8.GetBytes("kiro-usage:sess:agent:msg-1"))));
+    }
+
     [Test]
     public async Task OpenCode_hashes_the_utf8_key_and_suffixes_a_tool_part_for_its_call_and_result() {
         await Assert.That(TranscriptIds.OpenCode("prt_tool1")).IsEqualTo(new Guid(XxHash128.Hash(Encoding.UTF8.GetBytes("prt_tool1"))));
@@ -120,6 +145,10 @@ public class TranscriptIdsTests {
     [Arguments("vibe-tool-call", "6509a28d-49aa-5bf6-7f69-110d330e62f4")]
     [Arguments("vibe-entry", "d219bcea-d51a-d28e-6f8a-c4d4635844d0")]
     [Arguments("muse-record", "d8a1a66a-0ef6-88fa-a0ea-41440eb74617")]
+    // kcap-server's v1 Kiro baseline stores its corpus prompt under this id.
+    [Arguments("kiro-record", "e64903f7-a47d-58e2-89f8-632e007b4463")]
+    [Arguments("kiro-fallback", "f90b0ae9-4cfc-9416-d235-73a9332a649b")]
+    [Arguments("kiro-usage", "daa9f1c9-0ac4-0c62-afc0-c8890fdecf69")]
     // The four OpenCode ids from a message, a part and a tool part are the ones kcap-server stored for its corpus.
     [Arguments("opencode-message", "62a73d5f-a531-3bc5-f777-dcfa427bd75f")]
     [Arguments("opencode-part", "f4fadcc6-a417-b1da-6f1b-27d3b0f64760")]
@@ -147,6 +176,9 @@ public class TranscriptIdsTests {
         "vibe-tool-call"    => TranscriptIds.VibeToolCall(Primary, "call_1"),
         "vibe-entry"        => TranscriptIds.VibeEntry("user-turn-abc-1"),
         "muse-record"       => TranscriptIds.MuseRecord("01a13694-b0ad-7ae2-8bf5-2af6357a0847", "e6b35c82-47c0-48f2-868a-0e369eccecc8"),
+        "kiro-record"       => TranscriptIds.KiroRecord("5f6c2b1a9e3d4a7cbb121c2d3e4f5a6b", "9415c9c4-ddb3-4438-9cf9-9df865547069", "user"),
+        "kiro-fallback"     => TranscriptIds.KiroFallback("{\"kind\":\"Prompt\"}", "user"),
+        "kiro-usage"        => TranscriptIds.KiroUsage("sess:agent", "msg-1"),
         "opencode-message"     => TranscriptIds.OpenCode("msg_ef5f2a28200171s67y5GODESjO"),
         "opencode-part"        => TranscriptIds.OpenCode("prt_ef5f2a5070014eRszLgUFChcFr"),
         "opencode-tool-call"   => TranscriptIds.OpenCodeToolCall("prt_tool1"),

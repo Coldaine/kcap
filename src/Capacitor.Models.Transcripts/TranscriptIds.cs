@@ -68,6 +68,20 @@ public static class TranscriptIds {
     public static Guid MuseRecord(string streamId, string recordId) =>
         Hash(Encoding.UTF8.GetBytes("muse-record:" + streamId + ":" + recordId));
 
+    /// Kiro's event ids, and its lifecycle hooks' on the server, are name-based (v5) UUIDs in this
+    /// namespace. Changing it orphans every stored Kiro event.
+    static readonly Guid KiroNamespace = new("a7e1d4c8-3b95-4f2a-9d6e-2c8b1a0f5e34");
+
+    /// The v5 UUID of <c>{sessionId}:{key}:{kind}</c>, where the key is a message or tool-use id.
+    public static Guid KiroRecord(string sessionId, string key, string kind) =>
+        Uuid5(KiroNamespace, $"{sessionId}:{key}:{kind}");
+
+    /// A Kiro event with no session or key to name it: the line, then <c>:{kind}</c>.
+    public static Guid KiroFallback(string line, string kind) => Hash(Encoding.UTF8.GetBytes($"{line}:{kind}"));
+
+    /// One per turn anchor in a stream, whatever line restates it, so a re-sent backfill dedups.
+    public static Guid KiroUsage(string idScope, string messageId) => Hash(Encoding.UTF8.GetBytes($"kiro-usage:{idScope}:{messageId}"));
+
     /// An OpenCode id hashes a key the record carries, unprefixed: a user message's own id (its text
     /// when it has none), or an assistant part's id.
     public static Guid OpenCode(string key) => Hash(Encoding.UTF8.GetBytes(key));
