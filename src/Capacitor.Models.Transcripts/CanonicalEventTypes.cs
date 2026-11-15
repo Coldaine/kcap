@@ -15,6 +15,7 @@ public static class CanonicalEventTypes {
     public const string UserMessageRetracted        = "UserMessageRetracted";
     public const string CodexUsageBackfilled        = "CodexUsageBackfilled";
     public const string KiroUsageBackfilled         = "KiroUsageBackfilled";
+    public const string MuseUsageBackfilled         = "MuseUsageBackfilled";
     public const string InterruptIssued             = "InterruptIssued";
     public const string AntigravityUsageBackfilled  = "AntigravityUsageBackfilled";
     public const string CopilotUsageBackfilled      = "CopilotUsageBackfilled";
@@ -34,6 +35,7 @@ public static class CanonicalEventTypes {
         UserMessageRetractedEvent                               => UserMessageRetracted,
         Harness.Codex.CodexUsageBackfilledEvent                 => CodexUsageBackfilled,
         Harness.Kiro.KiroUsageBackfill                          => KiroUsageBackfilled,
+        Harness.Muse.MuseUsageBackfill                          => MuseUsageBackfilled,
         Kurrent.Agent.Schema.Events.InterruptIssued             => InterruptIssued,
         Harness.Antigravity.AntigravityUsageBackfill            => AntigravityUsageBackfilled,
         Harness.Copilot.CopilotUsageBackfill                    => CopilotUsageBackfilled,
