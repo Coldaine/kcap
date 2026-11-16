@@ -872,6 +872,31 @@ public class ClaudeHookCommandTests {
         await Assert.That(fx.MemoryIndexRequestCount).IsEqualTo(1); // NOT re-fetched
     }
 
+    /// <summary>A failed SessionStart POST answers without waiting for the memory lane, and the lane failing
+    /// afterwards writes nothing: a late line would land in whatever else shares the process's stderr.
+    /// Redirects the process-global Console.Error, so it runs alone.</summary>
+    [Test, NotInParallel]
+    public async Task memory_lane_failing_after_the_hook_answered_writes_nothing_to_stderr() {
+        using var absent = new TempDir();
+        // A malformed index fails the lane, and holding it lets the hook answer first.
+        using var fx = new Fixture(Config.Root, HttpStatusCode.InternalServerError) {
+            MemoryIndexBody = "[", MemoryIndexDelay = TimeSpan.FromMilliseconds(500)
+        };
+        using var capture = ConsoleOutput.StartErrorCapture("\n");
+
+        var sid = Guid.NewGuid().ToString("N");
+        await fx.HandleAsync($$"""{"hook_event_name":"SessionStart","session_id":"{{sid}}","cwd":"{{AbsentCwd(absent)}}","source":"startup"}""");
+        var answered = capture.GetCapturedError();
+        // A server logs a request once it has answered it.
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!fx.MemoryIndexRequested && DateTime.UtcNow < deadline) await Task.Delay(20);
+        await Task.Delay(TimeSpan.FromSeconds(1));
+
+        await Assert.That(fx.MemoryIndexRequested).IsTrue();
+        await Assert.That(answered).DoesNotContain("lane skipped");
+        await Assert.That(capture.GetCapturedError()).IsEqualTo(answered);
+    }
+
     [Test, NotInParallel]
     public async Task memory_index_get_timing_out_does_not_suppress_lessons_or_nudge() {
         // The memory-index GET runs in parallel with the POST and is joined ONLY within the
