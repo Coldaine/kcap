@@ -39,8 +39,9 @@ static class SessionImporter {
             SessionMetadata            metadata,
             string?                    encodedCwd,
             TimeProvider               time,
-            IProgress<ImportProgress>? progress = null,
-            HarnessId                  vendor   = HarnessId.Claude
+            IProgress<ImportProgress>? progress   = null,
+            HarnessId                  vendor     = HarnessId.Claude,
+            bool                       stopAtLoss = false
         ) {
         if (!File.Exists(transcriptPath))
             return new(sessionId, [], 0);
@@ -105,7 +106,7 @@ static class SessionImporter {
                     // Send agent lifecycle: start → transcript → stop
                     agentTypes.TryGetValue(agentId, out var agentType);
                     await SendAgentLifecycle(httpClient, baseUrl, sessionId, agentId, agentType, spawnCalls.GetValueOrDefault(agentId),
-                        agentPath, cwd, transcriptPath, progress, time);
+                        agentPath, cwd, transcriptPath, progress, time, stopAtLoss);
                     sentAgents.Add(agentId);
                     agentIds.Add(agentId);
                 }
@@ -133,7 +134,7 @@ static class SessionImporter {
             if (!sentAgents.Contains(agentId)) {
                 agentTypes.TryGetValue(agentId, out var agentType);
                 await SendAgentLifecycle(httpClient, baseUrl, sessionId, agentId, agentType, spawnCalls.GetValueOrDefault(agentId),
-                    agentPath, cwd, transcriptPath, progress, time);
+                    agentPath, cwd, transcriptPath, progress, time, stopAtLoss);
                 sentAgents.Add(agentId);
                 agentIds.Add(agentId);
             }
@@ -187,7 +188,7 @@ static class SessionImporter {
 
         async Task FlushAsync() =>
             totalSent += await FlushBatchAsync(
-                httpClient, baseUrl, sessionId, agentId: null, batch, vendor, failOnError: false, progress, time);
+                httpClient, baseUrl, sessionId, agentId: null, batch, vendor, failOnError: false, stopAtLoss, progress, time);
     }
 
     /// <summary>POSTs one subagent lifecycle hook; false on any failure so the caller can
@@ -505,7 +506,8 @@ static class SessionImporter {
             string                     cwd,
             string                     sessionTranscriptPath,
             IProgress<ImportProgress>? progress,
-            TimeProvider               time
+            TimeProvider               time,
+            bool                       stopAtLoss
         ) {
         var resolvedAgentType = agentType ?? "task";
 
@@ -529,7 +531,7 @@ static class SessionImporter {
 
         progress?.Report(new SubagentStarted(agentId));
         var agentLines = await SendTranscriptBatches(
-            httpClient, baseUrl, sessionId, agentPath, agentId, startLine: 0, time: time, progress: progress);
+            httpClient, baseUrl, sessionId, agentPath, agentId, startLine: 0, time: time, progress: progress, stopAtLoss: stopAtLoss);
         progress?.Report(new SubagentFinished(agentId, agentLines));
 
         var agentStopHook = new JsonObject {
@@ -574,6 +576,9 @@ static class SessionImporter {
     /// marker check over an already-resolved identity, not a correlator run per batch.
     /// </param>
     /// <param name="completeLines">Receives <see cref="CompleteLines"/> for the read.</param>
+    /// <param name="stopAtLoss">A batch the server does not take ends delivery with
+    /// <see cref="TranscriptDeliveryAbortedException"/>, while normalization stays lenient: a later batch would move the
+    /// server's watermark past the lost lines, and the next import resumes from the watermark.</param>
     internal static async Task<int> SendTranscriptBatches(
             HttpClient                 httpClient,
             string                     baseUrl,
@@ -589,7 +594,8 @@ static class SessionImporter {
             bool                       failOnError       = false,
             Func<bool>?                abortDelivery     = null,
             StrongBox<int>?            completeLines     = null,
-            TranscriptImportFingerprint? fingerprint    = null
+            TranscriptImportFingerprint? fingerprint    = null,
+            bool                       stopAtLoss        = false
         ) {
         if (!File.Exists(filePath)) return 0;
 
@@ -635,7 +641,7 @@ static class SessionImporter {
         async Task FlushAsync() {
             if (abortDelivery?.Invoke() == true) throw new TranscriptDeliveryAbortedException();
 
-            totalSent += await FlushBatchAsync(httpClient, baseUrl, sessionId, agentId, batch, vendor, failOnError, progress, time);
+            totalSent += await FlushBatchAsync(httpClient, baseUrl, sessionId, agentId, batch, vendor, failOnError, stopAtLoss, progress, time);
 
             if (abortDelivery?.Invoke() == true) throw new TranscriptDeliveryAbortedException();
         }
@@ -662,6 +668,7 @@ static class SessionImporter {
             TranscriptBatchBuffer      batch,
             HarnessId                  vendor,
             bool                       failOnError,
+            bool                       stopAtLoss,
             IProgress<ImportProgress>? progress,
             TimeProvider               time
         ) {
@@ -707,6 +714,7 @@ static class SessionImporter {
             if (failOnError) throw new HttpRequestException($"transcript batch lines {first + 1}-{last + 1} failed: {loss}", cause);
 
             progress?.Report(new BatchDropped(sessionId, agentId, first, last, loss));
+            if (stopAtLoss) throw new TranscriptDeliveryAbortedException();
         }
 
         var flushed = batch.Count;
