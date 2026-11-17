@@ -563,6 +563,12 @@ public sealed class ClaudeHookCommand(
                 await ReportSpoolAsync(spool.Append(sessionId, "subagent-stop", NormalizeForSpool(body, command)),
                                        "subagent-stop", $"{sessionId}/{agentId}", reason, unusableUrl);
             }
+            else if (command == "stop" && sessionId is not null && agentId is null) {
+                // Persisted before the journal clear, whose lock wait could otherwise spend what is left of the ceiling.
+                var stop = NormalizeForSpool(body, command);
+                await ReportSpoolAsync(spool.Append(sessionId, "stop", stop), "stop", sessionId, reason, unusableUrl);
+                ClearTurnJournal(stop);
+            }
             else if (unusableUrl) {
                 await Console.Error.WriteLineAsync(
                     UnusableUrlDiagnostic.Build(profiles.Resolution.Source, Url, $"{command ?? "hook"} dropped (not a spoolable event)"));
@@ -1219,8 +1225,8 @@ public sealed class ClaudeHookCommand(
                     if (resolvedSlug is not null) {
                         var planContent = ReadPlanFile(resolvedSlug, ClaudeLayoutFor(transcriptPath));
 
-                        if (planContent is not null) {
-                            await PostPlanContentAsync(client, clock.Time, Url, sessionId, planContent);
+                        if (planContent is not null && budget.Remaining > TimeSpan.Zero) {
+                            await PostPlanContentAsync(client, clock.Time, Url, sessionId, planContent, budget.Remaining);
                         }
                     }
                 } catch {
@@ -1291,7 +1297,7 @@ public sealed class ClaudeHookCommand(
 
         // Dedicated bounded POST for session-end: single attempt clamped to the remaining
         // hook budget, spools on transient failure, and checks generate_whats_done on success.
-        // Other commands continue through the shared PostWithRetryAsync path below.
+        // Other commands continue through the shared bounded path below.
         if (command == "session-end") {
             // Parse once: stamp ended_at and extract sessionId in a single pass.
             string? sessionId = null;
@@ -1419,49 +1425,63 @@ public sealed class ClaudeHookCommand(
             }
         }
 
-        // The turn is over, so its pending asks expire with it: a decision journalled for one turn
-        // must never answer an identical call in the next.
-        if (command == "stop") {
-            try {
-                var stopSessionId = JsonNode.Parse(body)?["session_id"]?.GetValue<string>();
-                if (stopSessionId is not null) new PolicyDecisionJournal(config).ClearTurn(stopSessionId);
-            } catch { }
+        if (command == "stop") ClearTurnJournal(body);
+
+        // One attempt inside what is left of the event's ceiling: the host kills the hook at its manifest
+        // timeout, so a retry that outlives it loses the event and holds the agent's turn for nothing.
+        var genericSessionId = SessionIdOf(body);
+        var spools           = command != "notification" && genericSessionId is not null;
+
+        // Not posted live: spooled behind a backlog or after a failure. The local work below still runs, a
+        // subagent's recorder above all, since a replay posts the event and nothing else.
+        var deferred = false;
+
+        // Deferred even when the append fails: posting live ahead of the backlog breaks its order.
+        if (spools && CurrentSessionHasBacklog(spool, genericSessionId)) {
+            await ReportSpoolAsync(spool.Append(genericSessionId!, command!, body), command!, genericSessionId!, "ordering guard", unusableUrl: false);
+            deferred = true;
         }
 
-        using var sharedContent = new StringContent(body, Encoding.UTF8, "application/json");
-
-        HttpResponseMessage response;
-
+        HttpResponseMessage? response = null;
         try {
-            response = await client.PostWithRetryAsync($"{Url}/hooks/{command}", sharedContent, clock.Time);
-        } catch (HttpRequestException ex) {
-            HttpClientExtensions.WriteUnreachableError(Url, ex);
-
-            return 1;
+            if (!deferred && budget.Remaining > TimeSpan.Zero) {
+                using var content = new StringContent(body, Encoding.UTF8, "application/json");
+                response = await client.PostOnceAsync($"{Url}/hooks/{command}", content, clock.Time, budget.Remaining, CancellationToken.None);
+            }
+        } catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException) {
+            response = null;
         }
         HookTiming.Mark("post");
 
-        if (!response.IsSuccessStatusCode) {
-            var code = (int)response.StatusCode;
-            response.Dispose();
+        if (!deferred && (response is null || !response.IsSuccessStatusCode)) {
+            var code      = response is null ? 0 : (int)response.StatusCode;
+            var retryable = response is null || HookSpool.IsRetryable(code);
+            response?.Dispose();
+            response = null;
+
+            if (!retryable) {
+                Console.Error.WriteLine($"HTTP {code}");
+
+                return 1;
+            }
+
+            if (spools) {
+                await ReportSpoolAsync(spool.Append(genericSessionId!, command!, body), command!, genericSessionId!, FailureReason(code), unusableUrl: false);
+            } else {
+                await Console.Error.WriteLineAsync($"[kcap] {command} dropped ({FailureReason(code)})");
+            }
 
             // Exit 0 is deliberate: any non-zero exit renders as Claude's opaque hook-error banner
             // instead of the notice. `stop` only — `notification` fires per permission prompt and
             // would stack duplicates within one turn.
-            if (code == 401) {
-                if (command == "stop") {
-                    writer.WriteLine(new JsonObject { ["systemMessage"] = AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid) }.ToJsonString());
-                }
-
-                return 0;
+            if (code == 401 && command == "stop") {
+                writer.WriteLine(new JsonObject { ["systemMessage"] = AuthRejectionNotice.RecordingNotice(StoredCredentialState.LooksValid) }.ToJsonString());
             }
 
-            Console.Error.WriteLine($"HTTP {code}");
-
-            return 1;
+            deferred = true;
         }
 
-        if (command == "stop") {
+        if (command == "stop" && response is not null) {
             string? ack = null;
             try { ack = await response.Content.ReadAsStringAsync(); } catch { }
 
@@ -1476,7 +1496,7 @@ public sealed class ClaudeHookCommand(
                 writer.WriteLine(ClaudeCompletionNudge.BlockDecision);
         }
 
-        response.Dispose();
+        response?.Dispose();
 
         switch (command) {
             case "subagent-start": {
@@ -1704,10 +1724,10 @@ public sealed class ClaudeHookCommand(
         }
     }
 
-    static async Task PostPlanContentAsync(HttpClient httpClient, TimeProvider time, string url, string sessionId, string planContent) {
+    static async Task PostPlanContentAsync(HttpClient httpClient, TimeProvider time, string url, string sessionId, string planContent, TimeSpan within) {
         var       obj         = new JsonObject { ["plan_content"] = planContent };
         using var planPayload = new StringContent(obj.ToJsonString(), Encoding.UTF8, "application/json");
-        await httpClient.PostWithRetryAsync($"{url}/api/sessions/{sessionId}/plan", planPayload, time);
+        using var _           = await httpClient.PostOnceAsync($"{url}/api/sessions/{sessionId}/plan", planPayload, time, within, CancellationToken.None);
     }
 
     /// <summary>
@@ -1735,6 +1755,18 @@ public sealed class ClaudeHookCommand(
                 return DrainOutcome.TransientStop;
             }
         };
+
+    static string? SessionIdOf(string body) {
+        try { return JsonNode.Parse(body)?["session_id"]?.GetValue<string>(); } catch { return null; }
+    }
+
+    // The turn is over, so its pending asks expire with it: a decision journalled for one turn
+    // must never answer an identical call in the next.
+    void ClearTurnJournal(string body) {
+        try {
+            if (SessionIdOf(body) is { } sid) new PolicyDecisionJournal(config).ClearTurn(sid);
+        } catch { }
+    }
 
     /// <summary>
     /// Returns true if the given session still has undelivered spool entries. Used as an ordering
