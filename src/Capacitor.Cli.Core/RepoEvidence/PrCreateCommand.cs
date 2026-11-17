@@ -10,6 +10,10 @@ namespace Capacitor.Cli.Core.RepoEvidence;
 /// <c>gh pr create || gh pr view</c> the output and exit status are the view's, which prints an existing PR's URL.
 /// A substitution holding one must be the whole of a variable assignment followed only by an echo of that variable,
 /// joined by <c>&amp;&amp;</c> (<c>url=$(gh pr create …) &amp;&amp; echo "$url"</c>), so its URL reaches the output.
+/// The one thing that may follow a create is a pipe into a <c>tail</c> or <c>head</c> keeping two lines or more
+/// (<c>gh pr create … 2&gt;&amp;1 | tail -5</c>), which agents use to trim output; the run's exit status is then the
+/// filter's, which the match reports as filtered. Such a create must keep its stderr, where gh says a PR already
+/// exists, and follow nothing but a <c>cd</c>.
 /// </summary>
 public static partial class PrCreateCommand {
     const int MaxDepth = 4;
@@ -25,11 +29,17 @@ public static partial class PrCreateCommand {
     /// <summary>True when <paramref name="command"/> runs <c>gh pr create</c> as its last command;
     /// <paramref name="repo"/> is its <c>--repo</c>/<c>-R</c> value, if it named one. A <c>--dry-run</c> creates
     /// nothing and does not match.</summary>
-    public static bool TryMatch(string command, out string? repo) {
-        repo = null;
+    public static bool TryMatch(string command, out string? repo) => TryMatch(command, out repo, out _);
+
+    /// <inheritdoc cref="TryMatch(string, out string?)"/>
+    /// <param name="filtered">The create's output passes through a <c>tail</c> or <c>head</c>, whose exit status the run
+    /// reports in place of the create's.</param>
+    public static bool TryMatch(string command, out string? repo, out bool filtered) {
+        repo     = null;
+        filtered = false;
         return command.Contains("gh", StringComparison.Ordinal)
             && command.Contains("create", StringComparison.Ordinal)
-            && Search(command, 0, out repo);
+            && Search(command, 0, out repo, out filtered);
     }
 
     /// <summary>Whether a <c>--repo</c> value names <paramref name="owner"/>/<paramref name="name"/>. It may be
@@ -45,8 +55,9 @@ public static partial class PrCreateCommand {
             && string.Equals(segments[^1], name, StringComparison.OrdinalIgnoreCase);
     }
 
-    static bool Search(string text, int depth, out string? repo) {
-        repo = null;
+    static bool Search(string text, int depth, out string? repo, out bool filtered) {
+        repo     = null;
+        filtered = false;
 
         var commands = new List<ShellCommand>();
         Scan(text, 0, substitution: false, commands);
@@ -55,7 +66,9 @@ public static partial class PrCreateCommand {
             var command = commands[k];
 
             if (Inspect(command, out var shellScript, out var invocationRepo)) {
-                if (k != commands.Count - 1 || !RunsUnconditionally(commands, k)) return false;
+                filtered = k == commands.Count - 2 && IsLineFilter(commands[k + 1]);
+                if (k != commands.Count - 1 && !filtered || !RunsUnconditionally(commands, k)) return false;
+                if (filtered && (command.DiscardsStderr || !OnlyChangesDirectory(commands, k))) return false;
 
                 repo = invocationRepo;
                 return true;
@@ -67,18 +80,50 @@ public static partial class PrCreateCommand {
             if (wrapsShell) command.Scripts.Add(shellScript!);
 
             foreach (var script in command.Scripts) {
-                if (!Search(script, depth + 1, out var nestedRepo)) continue;
+                if (!Search(script, depth + 1, out var nestedRepo, out var nestedFiltered)) continue;
                 var accepted = command.Scripts.Count == 1
                             && RunsUnconditionally(commands, k)
                             && (wrapsShell && k == commands.Count - 1 && !command.RedirectsStdout || k == commands.Count - 2 && EchoesAssignment(command, commands[k + 1]));
                 if (!accepted) return false;
 
-                repo = nestedRepo;
+                if (nestedFiltered && !OnlyChangesDirectory(commands, k)) return false;
+
+                repo     = nestedRepo;
+                filtered = nestedFiltered;
                 return true;
             }
         }
 
         return false;
+    }
+
+    /// <summary>A filtered create's run succeeds whatever gh did, so nothing before it may print a URL that would then
+    /// read as its own: only <c>cd</c> may come first.</summary>
+    static bool OnlyChangesDirectory(List<ShellCommand> commands, int k) =>
+        commands.Take(k).All(c => c is { Scripts.Count: 0, RedirectsStdout: false, Words: ["cd", ..] });
+
+    /// <summary><c>| tail -5</c>, <c>| head -n 20</c>: a filter reading only its input and keeping at least two lines,
+    /// so what it prints is the create's own output with gh's "already exists:" line, the one before the URL, in view.
+    /// </summary>
+    static bool IsLineFilter(ShellCommand command) {
+        if (command is not { Joiner: "|", Scripts.Count: 0, RedirectsStdout: false, ReadsElsewhere: false, Words: ["tail" or "head", .. var args] }) return false;
+
+        var lines = 10;
+
+        for (var i = 0; i < args.Count; i++) {
+            var arg = args[i];
+            var count = arg switch {
+                "-n" when i + 1 < args.Count => args[++i],
+                _ when arg.StartsWith("--lines=", StringComparison.Ordinal) => arg["--lines=".Length..],
+                _ when arg.StartsWith("-n", StringComparison.Ordinal) => arg[2..],
+                _ when arg.StartsWith('-') => arg[1..],
+                _ => null,
+            };
+
+            if (count is not { Length: > 0 } || !count.All(char.IsAsciiDigit) || !int.TryParse(count, out lines)) return false;
+        }
+
+        return lines >= 2;
     }
 
     /// <summary><c>NAME=$(…) &amp;&amp; echo "$NAME"</c>: the echo prints the substitution's output and nothing else, and
@@ -261,6 +306,7 @@ public static partial class PrCreateCommand {
                 case '<' when Heredoc().Match(text, i) is { Success: true, Index: var at } heredoc && at == i:
                     EndWord();
                     heredocs.Enqueue((Unquote(heredoc.Groups["word"].Value), heredoc.Groups["dash"].Success));
+                    current.ReadsElsewhere = true;
                     i += heredoc.Length;
                     break;
                 case '>' or '<':
@@ -292,6 +338,8 @@ public static partial class PrCreateCommand {
             // the repo is o/r.
             if (redirect) {
                 current.RedirectsStdout |= stdoutRedirect;
+                current.ReadsElsewhere  |= word.ToString().Contains('<');
+                current.DiscardsStderr  |= word.ToString() is var text && text.StartsWith("2>", StringComparison.Ordinal) && text != "2>&1";
                 redirectTarget          =  word[^1] is '>' or '<' or '&';
             } else if (redirectTarget) {
                 redirectTarget = false;
@@ -315,6 +363,8 @@ public static partial class PrCreateCommand {
                 current = new ShellCommand(joiner);
             } else {
                 current.RedirectsStdout = false;
+                current.ReadsElsewhere  = false;
+                current.DiscardsStderr  = false;
                 if (joiner != "\n" || !current.Joiner.EndsWith('&') && !current.Joiner.EndsWith('|')) current.Joiner += joiner;
             }
 
@@ -386,6 +436,12 @@ public static partial class PrCreateCommand {
         /// <summary>Whether it sends stdout elsewhere (<c>&gt;file</c>, <c>1&gt;&gt;file</c>), so a URL printed earlier
         /// would read as the create's. Only unquoted syntax counts; <c>2&gt;&amp;1</c> leaves stdout alone.</summary>
         public bool RedirectsStdout { get; set; }
+
+        /// <summary>Whether its stdin comes from a file or heredoc rather than the pipe before it.</summary>
+        public bool ReadsElsewhere { get; set; }
+
+        /// <summary>Whether it sends stderr anywhere but stdout, where gh reports a refused create.</summary>
+        public bool DiscardsStderr { get; set; }
     }
 
     [GeneratedRegex("^[A-Za-z_][A-Za-z0-9_]*=")]
