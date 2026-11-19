@@ -90,10 +90,11 @@ internal partial class AgentOrchestrator {
     /// it is pending and leaves admission only after it is published, so reading the admissions under the lock misses
     /// none. A launch still queued has not been admitted; it is no different from one that arrives after this.</summary>
     internal bool BusyForStatus() {
-        lock (_membership)
+        lock (_membership) {
             return _admission.InFlight > 0
                 || !_pendingLaunches.IsEmpty
                 || _agents.Values.Any(a => a.Status is "Starting" or "Running");
+        }
     }
 
     /// <summary>The live agents, then the ledger entries with no live agent. The ledger is read whole, before
@@ -629,7 +630,7 @@ internal partial class AgentOrchestrator {
         }
     }
 
-    static SendTextAckDto Refuse(string reason, string? error) => new(false, reason, error, null);
+    static SendTextAckDto Refuse(string reason, string? error) => new(false, reason, error);
 
     /// <summary>
     /// Spawn a new agent from a local <c>agent start</c> request, then attach the requesting
