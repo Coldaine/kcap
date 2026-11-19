@@ -1505,7 +1505,7 @@ public class ChatTabViewSmokeTests {
         await RunOnUiAsync(async () => {
             var host = new Host();
             try {
-                var encoded = System.Text.Json.Nodes.JsonValue.Create(path)!.ToJsonString();
+                var encoded = System.Text.Json.Nodes.JsonValue.Create(path).ToJsonString();
                 var call = ReadCallLine.Replace("\"Read\"", "\"" + name + "\"")
                     .Replace("\"/repo/x/src/a.cs\"", encoded);
                 if (name == "get_file_context") call = call.Replace("file_path", "path");
@@ -1540,8 +1540,8 @@ public class ChatTabViewSmokeTests {
             var host = new Host();
             try {
                 const string path = "/private/tmp/claude-501/a-deliberately-long-worktree-name-for-the-session-bd54/scratchpad/demo.txt";
-                var patch = $"*** Begin Patch\n*** Update File: {path}\n@@\n-a\n+b\n*** Add File: src/another.cs\n+x\n*** End Patch";
-                var input = new System.Text.Json.Nodes.JsonObject { ["input"] = patch }.ToJsonString();
+                const string patch = $"*** Begin Patch\n*** Update File: {path}\n@@\n-a\n+b\n*** Add File: src/another.cs\n+x\n*** End Patch";
+                var input          = new System.Text.Json.Nodes.JsonObject { ["input"] = patch }.ToJsonString();
                 var call = ToolCallLine.Replace("\"Bash\"", "\"apply_patch\"").Replace("""{"command":"ls -la"}""", input);
                 await host.LoadAsync(Tmp.CreateFile("patch-paths.jsonl", [call, ToolResultLine]));
                 host.View.ColumnSizing.UseLayout(1, double.PositiveInfinity);
@@ -1570,7 +1570,7 @@ public class ChatTabViewSmokeTests {
             var host = new Host();
             try {
                 var output = string.Join(wrapped ? " " : "\n", Enumerable.Repeat("recorded output", 800));
-                var encoded = System.Text.Json.Nodes.JsonValue.Create(output)!.ToJsonString();
+                var encoded = System.Text.Json.Nodes.JsonValue.Create(output).ToJsonString();
                 var result = ToolResultLine.Replace("\"ok\"", encoded);
                 await host.LoadAsync(Tmp.CreateFile("large-output.jsonl", [ToolCallLine, result, UserLine]));
                 var row = ToolRows(host.View).Single();
@@ -1608,7 +1608,7 @@ public class ChatTabViewSmokeTests {
             var host = new Host();
             try {
                 var output = string.Join("\n", Enumerable.Repeat("recorded output", 800));
-                var encoded = System.Text.Json.Nodes.JsonValue.Create(output)!.ToJsonString();
+                var encoded = System.Text.Json.Nodes.JsonValue.Create(output).ToJsonString();
                 var result = ToolResultLine.Replace("\"ok\"", encoded);
                 var path = Tmp.CreateFile("return-from-output.jsonl",
                     [.. Enumerable.Repeat(UserLine, 4), ToolCallLine, result, .. Enumerable.Repeat(UserLine, 30)]);
@@ -1708,7 +1708,7 @@ public class ChatTabViewSmokeTests {
             host.Time.Advance(CrDelay);
             await host.Terminal.PendingDeliveryForTesting!;
             await Assert.That(client.SentInput.Select(Encoding.UTF8.GetString))
-                .IsEquivalentTo(["\x1b[200~hi\x1b[201~", "\r"], CollectionOrdering.Matching);
+                .IsEquivalentTo(["\e[200~hi\e[201~", "\r"], CollectionOrdering.Matching);
             await host.CloseAsync();
         });
     }
@@ -2808,7 +2808,7 @@ public class ChatTabViewSmokeTests {
             await WaitUntilAsync(() => host.Window.FocusManager?.GetFocusedElement() is Button b
                 && b.Classes.Contains("option") && b.Classes.Contains(":focus-visible")
                 && b.DataContext is QuestionOptionViewModel { Label: "Ship it (Recommended)" }, what: "focus on the first option");
-            var first = (Button)host.Window.FocusManager!.GetFocusedElement()!;
+            var first = (Button)host.Window.FocusManager.GetFocusedElement()!;
             var second = Option(host, "Wait");
             await Assert.That(first.Classes.Contains(":focus-visible")).IsTrue();
             await Assert.That(first.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "Ship it (Recommended)" && t.IsEffectivelyVisible)).IsTrue();
@@ -2817,13 +2817,13 @@ public class ChatTabViewSmokeTests {
             await Assert.That(presenter.BorderBrush).IsSameReferenceAs(host.View.FindResource("KcapPurpleBrush"));
 
             host.Window.KeyPressQwerty(PhysicalKey.Tab, RawInputModifiers.Shift);
-            var shifted = host.Window.FocusManager!.GetFocusedElement();
+            var shifted = host.Window.FocusManager.GetFocusedElement();
             await Assert.That(shifted is Button { Classes: var classes } && classes.Contains("option")).IsFalse();
             await Assert.That(shifted is TextBox { PlaceholderText: "Other…" }).IsFalse();
             first.Focus();
 
             host.Press(PhysicalKey.ArrowDown);
-            await Assert.That(host.Window.FocusManager!.GetFocusedElement()).IsSameReferenceAs(second);
+            await Assert.That(host.Window.FocusManager.GetFocusedElement()).IsSameReferenceAs(second);
             await Assert.That(((QuestionOptionViewModel)second.DataContext!).IsSelected).IsFalse();
             await Assert.That(host.Chat.PendingCards.Count).IsEqualTo(1);
 
@@ -3002,7 +3002,7 @@ public class ChatTabViewSmokeTests {
             var prose = string.Join("\\n\\n", Enumerable.Range(1, 60).Select(i => $"Paragraph {i} of a long reply that wraps across the column."));
             var tall = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"" + prose + "\"}]}}";
             const string question = """{"questions":[{"question":"Pick","options":[{"label":"A"},{"label":"B"}]}]}""";
-            var ask = $$$"""{"type":"assistant","message":{"content":[{"type":"tool_use","id":"q-tool","name":"AskUserQuestion","input":{{{question}}}}]}}""";
+            const string ask = $$$"""{"type":"assistant","message":{"content":[{"type":"tool_use","id":"q-tool","name":"AskUserQuestion","input":{{{question}}}}]}}""";
             var path = Tmp.CreateFile("card.jsonl", [tall, tall, tall, .. Enumerable.Repeat(UserLine, 20), ask]);
             await host.LoadAsync(path);
             await Assert.That(host.AtBottom()).IsTrue();
@@ -3040,7 +3040,7 @@ public class ChatTabViewSmokeTests {
                 var prose = string.Join("\\n\\n", Enumerable.Range(1, 60).Select(i => $"Paragraph {i} of a long reply that wraps across the column."));
                 var tall = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"" + prose + "\"}]}}";
                 const string question = """{"questions":[{"question":"Pick","options":[{"label":"A"},{"label":"B"}]}]}""";
-                var ask = $$$"""{"type":"assistant","message":{"content":[{"type":"tool_use","id":"q-tool","name":"AskUserQuestion","input":{{{question}}}}]}}""";
+                const string ask = $$$"""{"type":"assistant","message":{"content":[{"type":"tool_use","id":"q-tool","name":"AskUserQuestion","input":{{{question}}}}]}}""";
                 var path = Tmp.CreateFile("pending-question.jsonl",
                     [tall, tall, tall, UserLine, ThinkingLine, CallLine(1), ResultLine(1), UserLine, ThinkingLine, CallLine(2), ResultLine(2),
                      ThinkingLine, CallLine(3), ResultLine(3), CallLine(4), ResultLine(4), ask]);
@@ -3356,7 +3356,7 @@ public class ChatTabViewSmokeTests {
         await RunOnUiAsync(async () => {
             var host = new Host();
             host.Window.Width = width;
-            var text = "Run every integration suite against the staging server and collect the coverage";
+            const string text = "Run every integration suite against the staging server and collect the coverage";
             var input = described ? $$$"""{"command":"make it","description":"{{{text}}}"}""" : $$$"""{"command":"{{{text}}}"}""";
             await host.LoadAsync(Tmp.CreateFile("sh.jsonl", [ShellCall("toolu_S", input), ShellLaunch("toolu_S", "b1")]));
             Click(host, host.View.FindControl<Button>("BackgroundTasksToggle")!);
