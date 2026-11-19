@@ -1386,6 +1386,80 @@ public class RemoteSessionViewModelTests {
         });
     }
 
+    /// A background monitor of a remote session never polls: the feed's own signal carries a
+    /// streamed event to the rail with the clock standing still.
+    [Test]
+    public async Task A_remote_background_monitor_reads_on_the_feeds_signal_without_a_poll() {
+        await RunOnUiAsync(async () => {
+            using var h = new Harness();
+            h.Detail = new(RemoteFixtures.Detail(
+                Event(0, CanonicalEventTypes.AssistantToolCallsGenerated, AgentCall),
+                Event(1, CanonicalEventTypes.ToolResultReceived, AgentLaunch)));
+            var row = Harness.ServerRow("s1", "active");
+            h.Directory.Rows.AddOrUpdate(row);
+            var latest = default(RunningWork);
+            using var monitor = new SessionRunMonitor(row.Key, work => latest = work, () => { }, new FakeDaemonClientService(),
+                h.Directory, h.Access, (_, _) => Task.FromResult(h.Detail), h.Lane, h.Time);
+
+            await WaitUntilAsync(() => latest.Subagents == 1 && h.Lane.Tails.Count == 1, what: "the seeded subagent and the tail");
+            await Assert.That(monitor.IsTickingForTesting).IsFalse();
+
+            h.Lane.PushStreamEvent(Envelope("s1", 2, CanonicalEventTypes.UserMessageReceived, AgentNotification));
+            await WaitUntilAsync(() => latest.Subagents == 0, what: "the subagent's end, with no time advanced");
+            await Assert.That(monitor.IsTickingForTesting).IsFalse();
+        });
+    }
+
+    /// A burst of streamed events posts one wake to the UI thread, not one per event.
+    [Test]
+    public async Task A_remote_background_monitor_posts_one_wake_for_a_burst() {
+        await RunOnUiAsync(async () => {
+            using var h = new Harness();
+            var row = Harness.ServerRow("s1", "active");
+            h.Directory.Rows.AddOrUpdate(row);
+            using var monitor = new SessionRunMonitor(row.Key, _ => { }, () => { }, new FakeDaemonClientService(),
+                h.Directory, h.Access, (_, _) => Task.FromResult(h.Detail), h.Lane, h.Time);
+            await WaitUntilAsync(() => h.Lane.Tails.Count == 1, what: "the tail");
+            await WaitUntilAsync(() => monitor.PendingReadForTesting is { IsCompleted: true }, what: "the seed read");
+            await Task.Delay(100);
+            var before = monitor.WakesPostedForTesting;
+
+            // Pushed off the UI thread, which stays busy meanwhile: the first wake cannot run, so every
+            // later event finds it posted. The fake lane resumes the feed inside each push, so every
+            // event has signalled by the time pushing completes.
+            var pushing = Task.Run(() => {
+                for (var i = 0UL; i < 50; i++)
+                    h.Lane.PushStreamEvent(Envelope("s1", i, CanonicalEventTypes.UserMessageReceived, $$"""{"content":"m{{i}}"}"""));
+            });
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            while (!pushing.IsCompleted && DateTime.UtcNow < deadline) Thread.Sleep(10);
+            await Assert.That(pushing.IsCompleted).IsTrue();
+
+            await Assert.That(monitor.WakesPostedForTesting - before).IsEqualTo(1);
+        });
+    }
+
+    /// A row that moves to another session while a read of the first is in flight still has the
+    /// replacement read, with no poll to fall back on.
+    [Test]
+    public async Task A_remote_background_monitor_reads_a_session_switched_to_during_a_read() {
+        await RunOnUiAsync(async () => {
+            using var h = new Harness();
+            var subagent = new SessionDetailFetch(RemoteFixtures.Detail(
+                Event(0, CanonicalEventTypes.AssistantToolCallsGenerated, AgentCall),
+                Event(1, CanonicalEventTypes.ToolResultReceived, AgentLaunch)));
+            var row = Harness.Row(vendor: "claude");
+            h.Directory.Rows.AddOrUpdate(row);
+            var latest = default(RunningWork);
+            using var monitor = new SessionRunMonitor(row.Key, work => latest = work, () => { }, new FakeDaemonClientService(),
+                h.Directory, h.Access, (session, _) => Task.FromResult(session == "s2" ? subagent : h.Detail), h.Lane, h.Time);
+
+            h.Directory.Rows.AddOrUpdate(row with { SessionId = "s2" });
+            await WaitUntilAsync(() => latest.Subagents == 1, what: "the replacement session read, with no time advanced");
+            await Assert.That(monitor.IsTickingForTesting).IsFalse();
+        });
+    }
+
     /// The rail looks a session running in a terminal up by its server key, so its work is published
     /// under that key, and stays there once the workspace closes.
     [Test]
