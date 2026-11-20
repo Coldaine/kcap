@@ -1197,7 +1197,6 @@ public partial class App : Application {
 
         // After the directory, which feeds it the session→agent map: a server-lane item names a
         // session, and only that map turns it into the agent whose card it belongs on.
-        SessionDetailReader readDetail = new SharedSessionDetailReader(ServerSessionHttp.DetailReader(sessionHttp, profiles)).ReadAsync;
         var readSubagent = ServerSessionHttp.SubagentEventsReader(sessionHttp, profiles);
         var readEvents = ServerSessionHttp.SessionEventsReader(sessionHttp, profiles);
         var readSummary = ServerSearchHttp.Summary(sessionHttp, profiles);
@@ -1328,7 +1327,7 @@ public partial class App : Application {
 
         var appSubject = SignedInSubject.From(serverLane.Status);
         var commands = new SessionRunActivity((key, report, ended, handoff) =>
-            new SessionRunMonitor(key, report, ended, service, directory, sessionAccess, readDetail, serverLane, _time, handoff));
+            new SessionRunMonitor(key, report, ended, service, directory, sessionAccess, readEvents, serverLane, _time, handoff));
         _commands = commands;
         Action linkGitHub = () => {
             if (profiles?.Resolution.ServerUrl is { Length: > 0 } url)
@@ -1372,7 +1371,7 @@ public partial class App : Application {
         // host, and the click opens nothing.
         RemoteSessionViewModel? BuildRemote(string agentId) =>
             directory.Rows.Lookup($"remote:{agentId}") is { HasValue: true, Value: var row }
-                ? new RemoteSessionViewModel(row, directory, sessionAccess, permissions, actions, serverLane, readDetail, workspaceOpener, _time, workContext,
+                ? new RemoteSessionViewModel(row, directory, sessionAccess, permissions, actions, serverLane, readEvents, workspaceOpener, _time, workContext,
                     () => new XtermTerminalSurface(80, 24, PtyDumpPath), planArtifacts, commands,
                     pullRequests: readers, requestSignIn: requestSignIn, linkGitHub: linkGitHub,
                     signInCompleted: serverClients.SignInCompleted, plans: plans, drafts: drafts, finds: finds, inputSending: attention.ReplySending,
@@ -1410,7 +1409,7 @@ public partial class App : Application {
         // A session the server lists with no daemon behind it: read-only, so no terminal surface.
         RemoteSessionViewModel? BuildServer(string sessionId) =>
             directory.Rows.Lookup($"server:{sessionId}") is { HasValue: true, Value: var row }
-                ? new RemoteSessionViewModel(row, directory, sessionAccess, permissions, actions, serverLane, readDetail, workspaceOpener, _time, workContext,
+                ? new RemoteSessionViewModel(row, directory, sessionAccess, permissions, actions, serverLane, readEvents, workspaceOpener, _time, workContext,
                     surfaceFactory: null, planArtifacts, commands,
                     pullRequests: readers, requestSignIn: requestSignIn, linkGitHub: linkGitHub,
                     signInCompleted: serverClients.SignInCompleted, plans: plans, drafts: drafts, finds: finds, inputSending: attention.ReplySending,

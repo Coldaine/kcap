@@ -239,6 +239,111 @@ public class ChatTabViewSmokeTests {
         }
     }
 
+    /// A remote session opens on its last message, and the reader who scrolls to the top pages the
+    /// older events in above the row they were reading without that row moving, down to event zero.
+    [Test]
+    [NotInParallel("AvaloniaSession")]
+    public Task Scrolling_to_the_top_pages_older_rows_in_without_moving_the_reading_row() => RunOnUiAsync(async () => {
+        var time = new FakeTimeProvider();
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 700).Select(i =>
+            RemoteFixtures.Event(i, CanonicalEventTypes.AssistantTextGenerated, $$"""{"content":"message {{i}}"}"""))]);
+        RemoteTranscriptFeed? feed = null;
+        var chat = new ChatTabViewModel("a1", AgentOrigin.Remote,
+            Observable.Return(new ChatSessionInfo("Ended", "Ended", "gemini", null, null, null, true, "", "s1")), Observable.Return<string[]?>(null),
+            new ViewModels.AcceptingChatPromptInput(), new NoAttachmentUploader(), key => feed = new RemoteTranscriptFeed(key, "gemini", access, server.Reader, lane, time, _ => { }, prefetch: 0),
+            new RecordingOpener(), time, new FakePermissionService(), new SessionRuns(time));
+        var view = new ChatTabView { DataContext = chat };
+        var window = new Window { Content = view, Width = 800, Height = 600 };
+        void Settle() {
+            for (var frame = 0; frame < 30; frame++) {
+                AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+                Dispatcher.UIThread.RunJobs();
+                window.UpdateLayout();
+            }
+        }
+        var list = view.FindControl<ItemsControl>("ChatItems")!;
+        ScrollViewer Scroll() => view.GetVisualDescendants().OfType<ScrollViewer>().First(s => s.Name == "ChatScroll");
+        string? TextOf(object? item) => (item as AssistantTextItem)?.Text;
+        async Task PageAsync(int expected) {
+            var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            server.Gate = () => release.Task;
+            var center = list.TranslatePoint(new Point(list.Bounds.Width / 2, list.Bounds.Height / 2), window)!.Value;
+            window.MouseWheel(center, new Vector(0, 100_000));
+            Settle();
+            await Assert.That(Scroll().Offset.Y).IsLessThanOrEqualTo(Scroll().Viewport.Height);
+            var reading = list.GetRealizedContainers()
+                .Select(container => (container, top: container.TranslatePoint(default, Scroll())!.Value.Y))
+                .Where(row => row.top + row.container.Bounds.Height > 1)
+                .MinBy(row => row.top);
+            var item = reading.container.DataContext;
+            release.SetResult();
+            await feed!.PendingOlderForTesting!;
+            await WaitUntilAsync(() => chat.Items.Count == expected, what: $"{expected} rows");
+            Settle();
+            var after = list.ContainerFromItem(item!)?.TranslatePoint(default, Scroll())?.Y;
+            await Assert.That(after).IsNotNull();
+            await Assert.That(Math.Abs(after!.Value - reading.top)).IsLessThan(2);
+        }
+        window.Show();
+        try {
+            await WaitUntilAsync(() => chat.Items.Count == 300, what: "the seed");
+            Settle();
+            await Assert.That(TextOf(chat.Items[^1])).IsEqualTo("message 699");
+            await Assert.That(Scroll().Offset.Y + Scroll().Viewport.Height).IsGreaterThanOrEqualTo(Scroll().Extent.Height - 2);
+
+            await PageAsync(600);
+            await PageAsync(700);
+            await Assert.That(TextOf(chat.Items[0])).IsEqualTo("message 0");
+            await Assert.That(feed!.HasOlder).IsFalse();
+
+            // A scroll asked for right after rows go in above lands where it was asked to, not where the
+            // insertion's pending correction would put it.
+            var rows = (Avalonia.Collections.AvaloniaList<ChatItemViewModel>)chat.Items;
+            rows.InsertRange(0, [new AssistantTextItem("extra 1"), new AssistantTextItem("extra 2")]);
+            list.ScrollIntoView(500);
+            Settle();
+            var target = list.ContainerFromIndex(500)?.TranslatePoint(default, Scroll())?.Y;
+            await Assert.That(target).IsNotNull();
+            await Assert.That(target!.Value).IsBetween(-1, Scroll().Viewport.Height);
+
+            // A jump straight back to where the reader was before the insert realizes the rows there.
+            Scroll().Offset = new Vector(0, 0);
+            Settle();
+            await Assert.That(list.ContainerFromIndex(0)).IsNotNull();
+
+            // A scroll to a row past the extent laid out before the insert still reaches it once layout grows.
+            rows.InsertRange(0, [.. Enumerable.Range(0, 300).Select(i => new AssistantTextItem($"page {i}"))]);
+            list.ScrollIntoView(rows.Count - 1);
+            Settle();
+            var last = list.ContainerFromIndex(rows.Count - 1)?.TranslatePoint(default, Scroll())?.Y;
+            await Assert.That(last).IsNotNull();
+            await Assert.That(last!.Value).IsBetween(-1, Scroll().Viewport.Height);
+
+            // A scroll the reader makes before an insertion's correction lands is kept, measured from the reading row.
+            var middle = list.TranslatePoint(new Point(list.Bounds.Width / 2, list.Bounds.Height / 2), window)!.Value;
+            window.MouseWheel(middle, new Vector(0, 100_000));
+            Settle();
+            list.ScrollIntoView(rows.Count / 2);
+            Settle();
+            var reading = list.GetRealizedContainers()
+                .Select(container => (container, top: container.TranslatePoint(default, Scroll())!.Value.Y))
+                .Where(row => row.top + row.container.Bounds.Height > 1)
+                .MinBy(row => row.top);
+            rows.InsertRange(0, [new AssistantTextItem("extra 3"), new AssistantTextItem("extra 4")]);
+            Scroll().Offset = new Vector(0, Scroll().Offset.Y - 60);
+            Settle();
+            var moved = list.ContainerFromItem(reading.container.DataContext!)?.TranslatePoint(default, Scroll())?.Y;
+            await Assert.That(moved).IsNotNull();
+            await Assert.That(Math.Abs(moved!.Value - (reading.top + 60))).IsLessThan(2);
+        } finally {
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            await chat.TeardownAsync();
+        }
+    });
+
     [Test]
     [NotInParallel("AvaloniaSession")]
     public Task Find_scrolls_to_and_marks_each_match_and_escape_clears_the_marks() => RunOnUiAsync(async () => {
