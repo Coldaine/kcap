@@ -8,6 +8,7 @@ using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using Avalonia.Collections;
 using Avalonia.Threading;
+using Capacitor.App.ProgressiveDisclosure;
 using Capacitor.App.Services;
 using Capacitor.App.ViewModels.Composer;
 using Capacitor.App.Views;
@@ -240,6 +241,14 @@ public sealed class ChatTabViewModel : ReactiveObject, IComposer {
 
     readonly ObservableAsPropertyHelper<bool> _hasPendingCards;
     public bool HasPendingCards => _hasPendingCards.Value;
+
+    /// Stays true once a graded reply is seen, so trimming early rows never hides the controls that grade it.
+    /// A switch to another session's feed clears it, and that feed's replay raises it again if it grades.
+    public bool HasProgressiveDisclosureMarks {
+        get => _hasProgressiveDisclosureMarks;
+        private set => this.RaiseAndSetIfChanged(ref _hasProgressiveDisclosureMarks, value);
+    }
+    bool _hasProgressiveDisclosureMarks;
 
     bool _hasSeed;
     /// Whether the current feed has delivered its first Reset. A remote send made before it has no
@@ -954,7 +963,10 @@ public sealed class ChatTabViewModel : ReactiveObject, IComposer {
 
         // The note follows whether the chat is empty, which every path that adds or clears rows changes.
         var empty = true;
-        _items.CollectionChanged += (_, _) => {
+        _items.CollectionChanged += (_, e) => {
+            if (!HasProgressiveDisclosureMarks && (e.NewItems ?? (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset ? _items : null)) is { } added
+                && added.OfType<AssistantTextItem>().Any(static item => ProgressiveDisclosureMarks.Grades(item.Text)))
+                HasProgressiveDisclosureMarks = true;
             if (empty == (_items.Count == 0)) return;
             empty = _items.Count == 0;
             RaisePhaseNote();
@@ -1499,6 +1511,7 @@ public sealed class ChatTabViewModel : ReactiveObject, IComposer {
     void SwitchFeed(string key, Func<string, IChatTranscriptFeed> open) {
         // A released tab's runs belong to the monitor that took its feed; this tab reads nothing more.
         if (_feedReleased) return;
+        HasProgressiveDisclosureMarks = false;
         _items.Clear();
         // A recall on screen gives way to the draft it replaced, or that draft would be stranded.
         var restore = _history.IsShowing(Recallable()) ? _history.TakeDraft() : null;
