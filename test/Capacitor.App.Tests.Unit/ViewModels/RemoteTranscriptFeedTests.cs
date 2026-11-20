@@ -7,6 +7,7 @@ using Capacitor.Remote.Models;
 using Eventuous.SignalR;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Time.Testing;
+using TUnit.Assertions.Enums;
 using static Capacitor.App.Tests.Unit.RemoteFixtures;
 using static Capacitor.App.Tests.Unit.WorkspaceFixtures;
 
@@ -1022,12 +1023,14 @@ public class RemoteTranscriptFeedTests {
         using (new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache)) {
             await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the tail");
         }
+        await Assert.That(cache.Contains("s1")).IsTrue();
         server.NotFound = true;
 
         using (var second = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache)) {
             await WaitUntilAsync(() => second.PendingRunForTesting is { IsCompleted: true }, what: "the run");
-            second.ReadAppended();
-            await Assert.That(second.ReadAppended().Status).IsEqualTo(FeedStatus.Missing);
+            var read = second.ReadAppended();
+            await Assert.That(read.Status).IsEqualTo(FeedStatus.Missing);
+            await Assert.That(read.Lines).IsEmpty();
         }
 
         await Assert.That(cache.Contains("s1")).IsFalse();
@@ -1218,10 +1221,11 @@ public class RemoteTranscriptFeedTests {
         await Assert.That(second.ReadAppended().Lines.Select(l => l.Offset)).IsEquivalentTo(Enumerable.Range(3, 7).Select(i => (long)i));
     }
 
-    /// A change of account while the re-open read is out drops the kept lines for a fresh seed.
+    /// A change of account while the re-open read is out drops the kept lines for a fresh seed. The accounts read
+    /// different text at the same events, so a seed carrying any kept line would show the first account's.
     [Test]
     public async Task A_change_of_account_during_a_reopen_reads_a_fresh_seed() {
-        var server = new FakeSessionEvents([.. Enumerable.Range(0, 10).Select(i => Text(i, $"m{i}"))]);
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 10).Select(i => Text(i, $"u1-{i}"))]);
         var lane = new FakeServerLane();
         using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
         using var subject = new BehaviorSubject<string?>("u1");
@@ -1229,17 +1233,54 @@ public class RemoteTranscriptFeedTests {
         using (var first = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache)) {
             await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the first tail");
         }
+        await Assert.That(cache.Contains("s1")).IsTrue();
         server.Requests.Clear();
         var calls = 0;
         server.Gate = () => {
-            if (Interlocked.Increment(ref calls) == 1) subject.OnNext("u2");
+            if (Interlocked.Increment(ref calls) == 1) {
+                subject.OnNext("u2");
+                server.Events.Clear();
+                server.Events.AddRange(Enumerable.Range(0, 10).Select(i => Text(i, $"u2-{i}")));
+            }
             return Task.CompletedTask;
         };
 
         using var second = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache);
         await WaitUntilAsync(() => lane.Tails.Count == 2, what: "the second tail");
 
-        await Assert.That(server.Requests).Contains((0L, 1));
+        await Assert.That(server.Requests.Take(2)).IsEquivalentTo(new[] { (9L, 1000), (0L, 1) }, CollectionOrdering.Matching);
+        var texts = second.ReadAppended().Lines.SelectMany(l => l.Projection.Envelopes).Select(e => e.Text).ToList();
+        await Assert.That(texts).IsEquivalentTo(Enumerable.Range(0, 10).Select(i => (string?)$"u2-{i}"), CollectionOrdering.Matching);
+    }
+
+    /// A transcript closed while its re-open read is out keeps its lines for the next open, which reads only
+    /// what followed them.
+    [Test]
+    public async Task A_transcript_closed_while_reopening_stays_kept() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 10).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var cache = Cache();
+        using (new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache)) {
+            await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the first tail");
+        }
+        server.Requests.Clear();
+        var release = new TaskCompletionSource();
+        server.Gate = () => release.Task;
+        var closing = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache);
+        await WaitUntilAsync(() => server.RequestCount == 1, what: "the re-open read");
+        closing.Dispose();
+        release.SetResult();
+        await closing.PendingRunForTesting!;
+        await Assert.That(cache.Contains("s1")).IsTrue();
+        server.Gate = null;
+        server.Requests.Clear();
+
+        using var reopened = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache);
+        await WaitUntilAsync(() => lane.Tails.Count == 2, what: "the second tail");
+
+        await Assert.That(reopened.ReadAppended().Lines.Select(l => l.Offset)).IsEquivalentTo(Enumerable.Range(0, 10).Select(i => (long)i));
+        await Assert.That(server.Requests).IsEquivalentTo(new[] { (9L, 1000) });
     }
 
     /// An older page the server refuses refuses the session, so its lines are not kept.
