@@ -778,6 +778,43 @@ public class RemoteTranscriptFeedTests {
         await Assert.That(feed.ReadAppended().Lines.Select(l => l.Offset)).IsEquivalentTo(Enumerable.Range(0, 2500).Select(i => (long)i));
     }
 
+    /// Events aging out again while a corrected page is asked for are corrected too: nothing after the first page is skipped.
+    [Test]
+    public async Task A_forward_read_across_two_agings_of_one_page_skips_nothing() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 2500).Select(i => Text(i, $"m{i}"))]);
+        var calls = 0;
+        server.Gate = () => {
+            if (Interlocked.Increment(ref calls) is 2 or 3) server.Events.RemoveRange(0, 5);
+            return Task.CompletedTask;
+        };
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var feed = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, window: null);
+        await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the tail");
+
+        await Assert.That(feed.ReadAppended().Lines.Select(l => l.Offset)).IsEquivalentTo(Enumerable.Range(0, 2500).Select(i => (long)i));
+    }
+
+    /// Enough events aging out between two pages leaves the next page's count past the end. The read places the
+    /// count again from the oldest event held and reads every event still held after the first page.
+    [Test]
+    public async Task A_forward_read_whose_count_ages_past_the_end_reads_what_is_left() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 1500).Select(i => Text(i, $"m{i}"))]);
+        var calls = 0;
+        server.Gate = () => {
+            if (Interlocked.Increment(ref calls) == 2) server.Events.RemoveRange(0, 1001);
+            return Task.CompletedTask;
+        };
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var feed = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, window: null);
+        await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the tail");
+
+        await Assert.That(feed.ReadAppended().Lines.Select(l => l.Offset))
+            .IsEquivalentTo(Enumerable.Range(0, 1000).Concat(Enumerable.Range(1001, 499)).Select(i => (long)i));
+        await Assert.That(lane.Tails[0].From).IsEqualTo((ulong?)1499);
+    }
+
     /// The pane's request for the next page, made while it handles the one that just landed, is taken.
     [Test]
     public async Task A_request_made_while_handling_a_page_is_taken() {
@@ -794,6 +831,63 @@ public class RemoteTranscriptFeedTests {
         await WaitUntilAsync(() => { lock (taken) return taken.Count == 1; }, what: "the handler's request");
 
         await Assert.That(taken[0]).IsTrue();
+    }
+
+    /// A refused older page stops the paging, so scrolling does not ask again, until access is granted anew.
+    [Test]
+    public async Task A_refused_older_page_stops_paging_until_access_is_granted_again() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 700).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var feed = Open(server, lane, access);
+        await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the tail");
+        feed.ReadAppended();
+        server.NotFound = true;
+        await Assert.That(feed.RequestOlder()).IsTrue();
+        await feed.PendingOlderForTesting!;
+        var asked = server.RequestCount;
+
+        await Assert.That(feed.HasOlder).IsFalse();
+        await Assert.That(feed.RequestOlder()).IsFalse();
+        await Assert.That(server.RequestCount).IsEqualTo(asked);
+
+        server.NotFound = false;
+        access.OnNext(SessionAccessState.Denied);
+        access.OnNext(SessionAccessState.Established);
+        await WaitUntilAsync(() => lane.Tails.Count == 2, what: "the tail after the new grant");
+        await Assert.That(feed.HasOlder).IsTrue();
+        await Assert.That(feed.RequestOlder()).IsTrue();
+        await feed.PendingOlderForTesting!;
+        await Assert.That(feed.ReadAppended().Older.Select(l => l.Offset)).IsEquivalentTo(Enumerable.Range(100, 300).Select(i => (long)i));
+    }
+
+    /// A refusal answering an older page asked for under an earlier grant of access leaves paging on under the next one.
+    [Test]
+    public async Task A_refusal_from_an_earlier_grant_leaves_paging_on() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 700).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var feed = Open(server, lane, access);
+        await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the tail");
+        feed.ReadAppended();
+        var answer = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        server.Gate = () => answer.Task;
+        await Assert.That(feed.RequestOlder()).IsTrue();
+        await WaitUntilAsync(() => server.RequestCount == 3, what: "the older request");
+
+        access.OnNext(SessionAccessState.Denied);
+        access.OnNext(SessionAccessState.Established);
+        await WaitUntilAsync(() => lane.Tails.Count == 2, what: "the tail under the new grant");
+        server.NotFound = true;
+        answer.SetResult();
+        await feed.PendingOlderForTesting!;
+
+        server.NotFound = false;
+        server.Gate = null;
+        await Assert.That(feed.HasOlder).IsTrue();
+        await Assert.That(feed.RequestOlder()).IsTrue();
+        await feed.PendingOlderForTesting!;
+        await Assert.That(feed.ReadAppended().Older.Select(l => l.Offset)).IsEquivalentTo(Enumerable.Range(100, 300).Select(i => (long)i));
     }
 
     /// An older page that fails as an unreachable server would is read again after the retry gap.
@@ -816,5 +910,287 @@ public class RemoteTranscriptFeedTests {
         }, what: "the retried page");
 
         await Assert.That(feed.ReadAppended().Older.Select(l => l.Offset)).IsEquivalentTo(Enumerable.Range(100, 300).Select(i => (long)i));
+    }
+
+    static RemoteTranscriptCache Cache() =>
+        new(new BehaviorSubject<string?>("u1"), new Subject<(string, SessionAccessState)>());
+
+    /// A re-opened session shows its kept lines with the events after them, read from the last kept one on.
+    [Test]
+    public async Task A_reopened_session_shows_its_kept_lines_and_reads_only_what_followed() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 700).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var cache = Cache();
+        using (var first = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache)) {
+            await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the first tail");
+            first.ReadAppended();
+            lane.PushStreamEvent(Envelope("s1", 700, CanonicalEventTypes.AssistantTextGenerated, """{"content":"live"}"""));
+            await WaitUntilAsync(() => first.CurrentOffset == 701, what: "the live event");
+        }
+        await Assert.That(cache.Contains("s1")).IsTrue();
+        server.Events.Add(Text(700, "live"));
+        server.Events.AddRange(Enumerable.Range(701, 5).Select(i => Text(i, $"m{i}")));
+        server.Requests.Clear();
+
+        using var second = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache);
+        await WaitUntilAsync(() => lane.Tails.Count == 2, what: "the second tail");
+
+        var seed = second.ReadAppended();
+        await Assert.That(seed.Status).IsEqualTo(FeedStatus.Reset);
+        await Assert.That(seed.Lines.Select(l => l.Offset)).IsEquivalentTo(Enumerable.Range(400, 306).Select(i => (long)i));
+        await Assert.That(seed.SnapshotOffset).IsEqualTo(706);
+        await Assert.That(second.ReadAppended().Lines).IsEmpty();
+        await Assert.That(server.Requests).IsEquivalentTo(new[] { (700L, 1000) });
+        await Assert.That(lane.Tails[1].From).IsEqualTo((ulong?)705);
+        await Assert.That(second.HasOlder).IsTrue();
+    }
+
+    /// A session the server no longer shows this reader is not kept, and its kept lines go.
+    [Test]
+    public async Task A_refused_reopen_drops_the_kept_lines() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 10).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var cache = Cache();
+        using (new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache)) {
+            await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the tail");
+        }
+        server.NotFound = true;
+
+        using (var second = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache)) {
+            await WaitUntilAsync(() => second.PendingRunForTesting is { IsCompleted: true }, what: "the run");
+            second.ReadAppended();
+            await Assert.That(second.ReadAppended().Status).IsEqualTo(FeedStatus.Missing);
+        }
+
+        await Assert.That(cache.Contains("s1")).IsFalse();
+    }
+
+    /// Access refused while the transcript is open keeps nothing when it closes.
+    [Test]
+    public async Task A_transcript_whose_access_is_refused_while_open_is_not_kept() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 10).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var cache = Cache();
+        using (new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache)) {
+            await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the tail");
+            access.OnNext(SessionAccessState.Denied);
+        }
+
+        await Assert.That(cache.Contains("s1")).IsFalse();
+    }
+
+    static async Task<RemoteTranscriptCache> CachedAsync(FakeSessionEvents server, FakeServerLane lane, BehaviorSubject<SessionAccessState> access) {
+        var cache = Cache();
+        using var first = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache);
+        await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the first tail");
+        first.ReadAppended();
+        return cache;
+    }
+
+    /// A transcript open across a change of account is not kept under the next one.
+    [Test]
+    public async Task A_transcript_open_across_a_change_of_account_is_not_kept() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 10).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var subject = new BehaviorSubject<string?>("u1");
+        using var cache = new RemoteTranscriptCache(subject, new Subject<(string, SessionAccessState)>());
+        using (new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache)) {
+            await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the tail");
+            subject.OnNext("u2");
+        }
+
+        await Assert.That(cache.Contains("s1")).IsFalse();
+    }
+
+    /// Kept lines wait for the server's answer: a refused read shows none of them.
+    [Test]
+    public async Task A_refused_reopen_shows_none_of_the_kept_lines() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 10).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var cache = await CachedAsync(server, lane, access);
+        server.Unauthorized = true;
+
+        using var second = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache);
+        await WaitUntilAsync(() => second.PendingRunForTesting is { IsCompleted: true }, what: "the run");
+
+        var read = second.ReadAppended();
+        await Assert.That(read.Status).IsEqualTo(FeedStatus.Failed);
+        await Assert.That(read.Lines).IsEmpty();
+    }
+
+    /// Events recorded while the transcript was closed are part of the replayed history, so a send made
+    /// after re-opening cannot be acknowledged by one of them.
+    [Test]
+    public async Task Events_recorded_while_closed_are_inside_the_reopened_seed() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 10).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var cache = await CachedAsync(server, lane, access);
+        server.Events.AddRange(Enumerable.Range(10, 3).Select(i => Text(i, $"m{i}")));
+
+        using var second = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache);
+        await WaitUntilAsync(() => lane.Tails.Count == 2, what: "the second tail");
+
+        var seed = second.ReadAppended();
+        await Assert.That(seed.Lines.Select(l => l.Offset)).IsEquivalentTo(Enumerable.Range(0, 13).Select(i => (long)i));
+        await Assert.That(seed.SnapshotOffset).IsEqualTo(13);
+        await Assert.That(second.ReadAppended().Lines).IsEmpty();
+    }
+
+    /// Events that aged out while the transcript was closed move the server's count: the kept lines are
+    /// dropped for a fresh seed rather than skipping what was recorded meanwhile.
+    [Test]
+    public async Task A_reopen_after_events_aged_out_reads_a_fresh_seed() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 10).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var cache = await CachedAsync(server, lane, access);
+        server.Events.RemoveRange(0, 3);
+        server.Events.AddRange(Enumerable.Range(10, 3).Select(i => Text(i, $"m{i}")));
+
+        using var second = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache);
+        await WaitUntilAsync(() => lane.Tails.Count == 2, what: "the second tail");
+
+        var seed = second.ReadAppended();
+        await Assert.That(seed.Lines.Select(l => l.Offset)).IsEquivalentTo(Enumerable.Range(3, 10).Select(i => (long)i));
+    }
+
+    /// A session opened before its first event learns where its stream starts from the live tail, so it is
+    /// kept when it closes.
+    [Test]
+    public async Task A_session_whose_first_events_came_live_is_kept() {
+        var server = new FakeSessionEvents();
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var cache = Cache();
+        using (var feed = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache)) {
+            await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the tail");
+            lane.PushStreamEvent(Envelope("s1", 0, CanonicalEventTypes.AssistantTextGenerated, """{"content":"first"}"""));
+            await WaitUntilAsync(() => feed.CurrentOffset == 1, what: "the live event");
+        }
+
+        await Assert.That(cache.Contains("s1")).IsTrue();
+    }
+
+    /// A re-open after more than a page of new events reads every page of them.
+    [Test]
+    public async Task A_reopen_reads_every_page_recorded_while_closed() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 10).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var cache = await CachedAsync(server, lane, access);
+        server.Events.AddRange(Enumerable.Range(10, 2500).Select(i => Text(i, $"m{i}")));
+
+        using var second = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache);
+        await WaitUntilAsync(() => lane.Tails.Count == 2, what: "the second tail");
+
+        await Assert.That(second.ReadAppended().Lines.Select(l => l.Offset)).IsEquivalentTo(Enumerable.Range(0, 2510).Select(i => (long)i));
+    }
+
+    /// Events aging out between a reopen's first page and the next move the count; the next page is asked for
+    /// again, so none of the events recorded while closed is skipped.
+    [Test]
+    public async Task A_reopen_across_events_aging_out_skips_nothing() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 10).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var cache = await CachedAsync(server, lane, access);
+        server.Events.AddRange(Enumerable.Range(10, 2500).Select(i => Text(i, $"m{i}")));
+        var calls = 0;
+        server.Gate = () => {
+            if (Interlocked.Increment(ref calls) == 2) server.Events.RemoveRange(0, 5);
+            return Task.CompletedTask;
+        };
+
+        using var second = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache);
+        await WaitUntilAsync(() => lane.Tails.Count == 2, what: "the second tail");
+
+        await Assert.That(second.ReadAppended().Lines.Select(l => l.Offset)).IsEquivalentTo(Enumerable.Range(0, 2510).Select(i => (long)i));
+    }
+
+    /// A reopen whose catch-up read fails as an unreachable server would resumes from the kept lines on the
+    /// retry, rather than reading a fresh seed.
+    [Test]
+    public async Task A_failed_catch_up_read_resumes_from_the_kept_lines_on_the_retry() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 700).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        var time = new FakeTimeProvider();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var cache = await CachedAsync(server, lane, access);
+        server.Events.AddRange(Enumerable.Range(700, 5).Select(i => Text(i, $"m{i}")));
+        server.Requests.Clear();
+        server.FailNext = 1;
+
+        using var second = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, time, _ => { }, cache: cache);
+        // The retry gap is a timer on the fake clock, which may not be registered yet when the failure lands.
+        await WaitUntilAsync(() => {
+            time.Advance(RemoteTranscriptFeed.Retry[0]);
+            return lane.Tails.Count == 2;
+        }, what: "the retried reopen");
+
+        await Assert.That(second.ReadAppended().Lines.Select(l => l.Offset)).IsEquivalentTo(Enumerable.Range(400, 305).Select(i => (long)i));
+        await Assert.That(server.Requests).IsEquivalentTo(new[] { (699L, 1000), (699L, 1000) });
+    }
+
+    /// Events that aged out with nothing new after them still move the count: the kept lines go.
+    [Test]
+    public async Task A_reopen_after_events_aged_out_with_nothing_new_reads_a_fresh_seed() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 10).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var cache = await CachedAsync(server, lane, access);
+        server.Events.RemoveRange(0, 3);
+
+        using var second = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache);
+        await WaitUntilAsync(() => lane.Tails.Count == 2, what: "the second tail");
+
+        await Assert.That(second.ReadAppended().Lines.Select(l => l.Offset)).IsEquivalentTo(Enumerable.Range(3, 7).Select(i => (long)i));
+    }
+
+    /// A change of account while the re-open read is out drops the kept lines for a fresh seed.
+    [Test]
+    public async Task A_change_of_account_during_a_reopen_reads_a_fresh_seed() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 10).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var subject = new BehaviorSubject<string?>("u1");
+        using var cache = new RemoteTranscriptCache(subject, new Subject<(string, SessionAccessState)>());
+        using (var first = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache)) {
+            await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the first tail");
+        }
+        server.Requests.Clear();
+        var calls = 0;
+        server.Gate = () => {
+            if (Interlocked.Increment(ref calls) == 1) subject.OnNext("u2");
+            return Task.CompletedTask;
+        };
+
+        using var second = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache);
+        await WaitUntilAsync(() => lane.Tails.Count == 2, what: "the second tail");
+
+        await Assert.That(server.Requests).Contains((0L, 1));
+    }
+
+    /// An older page the server refuses refuses the session, so its lines are not kept.
+    [Test]
+    public async Task A_refused_older_page_keeps_nothing() {
+        var server = new FakeSessionEvents([.. Enumerable.Range(0, 700).Select(i => Text(i, $"m{i}"))]);
+        var lane = new FakeServerLane();
+        using var access = new BehaviorSubject<SessionAccessState>(SessionAccessState.Established);
+        using var cache = Cache();
+        using (var feed = new RemoteTranscriptFeed("s1", "gemini", access, server.Reader, lane, new FakeTimeProvider(), _ => { }, cache: cache)) {
+            await WaitUntilAsync(() => lane.Tails.Count == 1, what: "the tail");
+            feed.ReadAppended();
+            server.NotFound = true;
+            await Assert.That(feed.RequestOlder()).IsTrue();
+            await feed.PendingOlderForTesting!;
+        }
+
+        await Assert.That(cache.Contains("s1")).IsFalse();
     }
 }
