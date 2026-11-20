@@ -208,7 +208,7 @@ public sealed class WorkspaceViewModel : ReactiveObject, ISessionWorkspace {
 
     void PrefillComposer(string prompt) {
         if (Chat is not { } chat) return;
-        chat.ComposerText = PullRequestContextViewModel.WithFixPrompt(chat.ComposerText, prompt);
+        chat.Draft(prompt);
         // The prompt is in the session's own composer, which an open subagent pane would hide.
         CloseSubagent();
         ActiveTab = WorkspaceTab.Chat;
@@ -260,7 +260,7 @@ public sealed class WorkspaceViewModel : ReactiveObject, ISessionWorkspace {
             HandoffOutcomeReader? handoffOutcomes = null,
             IPageContentSource? pageContent = null, PageLinkRouter? pageLinks = null, IWebViewAvailability? webView = null,
             ComposerPickers? pickers = null,
-            Func<bool>? inAppPages = null) {
+            Func<bool>? inAppPages = null, ChatMarks? chatMarks = null) {
         AgentId = agentId;
         _drafts = drafts;
         _opener = opener;
@@ -345,7 +345,8 @@ public sealed class WorkspaceViewModel : ReactiveObject, ISessionWorkspace {
         WorkContext = new WorkContextViewModel(presence.Select(p => p.Dto), workContext, time, opener, runs, requestSignIn, signInCompleted,
             actions.OpenWorkItemInWeb, plans, planActivity, artefacts: Artefacts, serverLane: serverLane,
             canSendToAgent: () => Chat is { ShowsComposer: true, CanSendText: true },
-            sendToAgent: text => Chat?.SendTextAsync(text) ?? Task.FromResult(false), layout: workContextLayout);
+            sendToAgent: text => Chat?.SendTextAsync(text) ?? Task.FromResult(false),
+            canDraftForAgent: () => Chat is { ShowsComposer: true }, draftForAgent: PrefillComposer, layout: workContextLayout);
         _showsProgressiveDisclosure = Observable.Switch(this.WhenAnyValue(w => w.IsChatActive, w => w.Chat, w => w.Subagent,
                 (active, chat, subagent) => active ? subagent?.Chat ?? chat : null)
             .Select(static chat => chat is null ? Observable.Return(false) : chat.WhenAnyValue(c => c.HasProgressiveDisclosureMarks)))
@@ -494,7 +495,7 @@ public sealed class WorkspaceViewModel : ReactiveObject, ISessionWorkspace {
                     senders, readings?.Local, readings?.Clock, signInCompleted,
                     handoffOutcome: handoffOutcomes is null ? null : Observable.Switch(sessionIds
                         .Select(sid => HandoffOutcomeReader.CardFor(handoffOutcomes, sid))),
-                    openLink: Artefacts.OpenLink, findMemory: finds,
+                    openLink: Artefacts.OpenLink, findMemory: finds, chatMarks: chatMarks,
                     viewerAccess: presence.Select(p => AgentViewerAccess.Unrestricted with { AtTerminal = p.Dto?.Kind == AgentActionService.AttachedKind })
                         .DistinctUntilChanged()) {
                     ShowTerminal = hasTerminal ? () => ActiveTab = WorkspaceTab.Terminal : null,
@@ -509,6 +510,10 @@ public sealed class WorkspaceViewModel : ReactiveObject, ISessionWorkspace {
                 };
                 Chat.Tasks.RunOpened += OpenSubagent;
                 _disposables.Add(Disposable.Create(() => Chat.Tasks.RunOpened -= OpenSubagent));
+                WorkContext.Topics = Chat.Topics;
+                WorkContext.Bookmarks = Chat.Bookmarks;
+                Chat.Topics.Revealing += ShowTopic;
+                _disposables.Add(Disposable.Create(() => Chat.Topics.Revealing -= ShowTopic));
                 if (PullRequests is { } fixHost)
                     Chat.WhenAnyValue(chat => chat.ShowsComposer).Subscribe(_ => fixHost.FixAvailabilityChanged()).DisposeWith(_disposables);
                 Chat.WhenAnyValue(chat => chat.ShowsComposer, chat => chat.CanSendText, (_, _) => Unit.Default)
@@ -603,6 +608,11 @@ public sealed class WorkspaceViewModel : ReactiveObject, ISessionWorkspace {
         dto is { Vendor: "claude", TranscriptPath: not null } && dto.TranscriptFormat != TranscriptFormats.Envelopes;
 
     void CloseSubagent() => ReplaceSubagent(null);
+
+    void ShowTopic() {
+        CloseSubagent();
+        ActiveTab = WorkspaceTab.Chat;
+    }
 
     void ReplaceSubagent(SubagentPaneViewModel? next) {
         var previous = Subagent;

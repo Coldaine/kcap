@@ -73,6 +73,8 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
     readonly SessionRuns _runs;
     readonly Func<bool> _canSendToAgent;
     readonly Func<string, Task<bool>> _sendToAgent;
+    readonly Func<bool> _canDraftForAgent;
+    readonly Action<string> _draftForAgent;
     readonly BehaviorSubject<bool> _canOpenWorkItem = new(false);
     readonly CompositeDisposable _disposables = new();
     ITimer? _timer;
@@ -113,6 +115,9 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
     }
     public bool CanCopyBranch => _branch != "—";
     public string Harness { get; private set => this.RaiseAndSetIfChanged(ref field, value); } = "—";
+
+    /// The session's agent, as a vendor token; null until the session reports one.
+    public string? AgentVendor { get; private set; }
     public string Tokens { get; private set => this.RaiseAndSetIfChanged(ref field, value); } = SessionFactText.Unknown;
     public string Cost { get; private set => this.RaiseAndSetIfChanged(ref field, value); } = SessionFactText.Unknown;
     public string ContextUse { get; private set => this.RaiseAndSetIfChanged(ref field, value); } = SessionFactText.Unknown;
@@ -343,10 +348,13 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
             Action<string>? openWorkItem = null, IPlanSource? plans = null, PlanActivity? planActivity = null,
             ArtefactsTabViewModel? artefacts = null, bool isRemote = false,
             IObservable<ServerLaneStatus>? serverLane = null, Func<bool>? canSendToAgent = null,
-            Func<string, Task<bool>>? sendToAgent = null, WorkContextLayout? layout = null) {
+            Func<string, Task<bool>>? sendToAgent = null, Func<bool>? canDraftForAgent = null,
+            Action<string>? draftForAgent = null, WorkContextLayout? layout = null) {
         _isRemote = isRemote;
         _canSendToAgent = canSendToAgent ?? (() => false);
         _sendToAgent = sendToAgent ?? (_ => Task.FromResult(false));
+        _canDraftForAgent = canDraftForAgent ?? (() => false);
+        _draftForAgent = draftForAgent ?? (_ => { });
         _layout = layout ?? new WorkContextLayout();
         _source = source;
         _branchReader = new SingleFlightReader<(string? Path, string? Reported), string>(
@@ -459,7 +467,26 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
     }
 
     internal void AgentInputAvailabilityChanged() {
-        if (!_tornDown) RaiseCompactState();
+        if (_tornDown) return;
+        RaiseCompactState();
+        this.RaisePropertyChanged(nameof(CanAskAgent));
+    }
+
+    /// Whether a request to the session's agent, such as one about a bookmark, can be drafted in its composer.
+    public bool CanAskAgent => _canDraftForAgent();
+
+    // Requests are drafted rather than sent: the user reads them, can add what the bookmark leaves out, and sends.
+    /// Drafts a request about a bookmark; false means nothing was drafted.
+    public bool AskAbout(ChatBookmark bookmark, ChatBookmarkAsk ask) => Ask(ask.For(bookmark));
+
+    /// Drafts one request to file every bookmark under a topic.
+    public bool FileLooseEnds(ChatBookmarkGroup section) =>
+        section is { Topic: { } topic, Bookmarks.Count: > 0 } && Ask(ChatBookmarkAskText.LooseEnds(topic.Label, section.Bookmarks));
+
+    bool Ask(string text) {
+        if (_tornDown || !CanAskAgent) return false;
+        _draftForAgent(text);
+        return true;
     }
 
     void RaiseCompactState() {
@@ -506,6 +533,7 @@ public sealed partial class WorkContextViewModel : ReactiveObject {
         ResolveBranch();
         var vendorLabel = HostedHarnessCatalog.LabelFor(DefaultHarnessOptions, dto.Vendor);
         Harness = $"{vendorLabel} · {HostedHarnessCatalog.ModelLabelFor(dto.Vendor, dto.Model ?? "")}";
+        AgentVendor = dto.Vendor;
         if (!_reader.HasCurrent) SessionIdText = SessionIds.Canonical(dto.SessionId) ?? "resolving…";
         UpdateRequester(dto, vendorLabel);
     }

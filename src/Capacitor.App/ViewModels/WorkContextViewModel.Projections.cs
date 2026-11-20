@@ -198,7 +198,7 @@ public sealed partial class WorkContextViewModel {
         }
     }
     readonly WorkContextLayout _layout;
-    // Usage, checkout and session folds are shared by every session's pane, so switching sessions
+    // Usage, checkout, session, topics and bookmarks folds are shared by every session's pane, so switching sessions
     // keeps what the reader opened.
     public bool UsageExpanded {
         get => _layout.UsageExpanded;
@@ -212,10 +212,24 @@ public sealed partial class WorkContextViewModel {
         get => _layout.SessionExpanded;
         private set => _layout.SessionExpanded = value;
     }
+    public bool OutlineExpanded {
+        get => _layout.OutlineExpanded;
+        private set => _layout.OutlineExpanded = value;
+    }
+
+    ChatTopics? _topics;
+    /// The chat's topics, listed with its bookmarks under the session's facts.
+    public ChatTopics? Topics { get => _topics; set => this.RaiseAndSetIfChanged(ref _topics, value); }
+
+    ChatBookmarks? _bookmarks;
+    /// The chat's bookmarks, which also lay out the topics and bookmarks section.
+    public ChatBookmarks? Bookmarks { get => _bookmarks; set => this.RaiseAndSetIfChanged(ref _bookmarks, value); }
+
     /// A header button has no expand state of its own to announce, so its name carries it.
     public string UsageToggleName => FoldName("Usage", UsageExpanded);
     public string CheckoutToggleName => FoldName("Checkout", CheckoutExpanded);
     public string SessionToggleName => FoldName("Session", SessionExpanded);
+    public string OutlineToggleName => FoldName("Topics and bookmarks", OutlineExpanded);
     static string FoldName(string section, bool expanded) => $"{section}, {(expanded ? "expanded" : "collapsed")}";
 
     void OnLayoutChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e) {
@@ -232,6 +246,10 @@ public sealed partial class WorkContextViewModel {
                 this.RaisePropertyChanged(nameof(SessionExpanded));
                 this.RaisePropertyChanged(nameof(SessionToggleName));
                 break;
+            case nameof(WorkContextLayout.OutlineExpanded):
+                this.RaisePropertyChanged(nameof(OutlineExpanded));
+                this.RaisePropertyChanged(nameof(OutlineToggleName));
+                break;
         }
     }
 
@@ -243,6 +261,7 @@ public sealed partial class WorkContextViewModel {
     public ReactiveCommand<Unit, Unit> ToggleUsageCommand { get; private set; } = null!;
     public ReactiveCommand<Unit, Unit> ToggleCheckoutCommand { get; private set; } = null!;
     public ReactiveCommand<Unit, Unit> ToggleSessionCommand { get; private set; } = null!;
+    public ReactiveCommand<Unit, Unit> ToggleOutlineCommand { get; private set; } = null!;
     public ReactiveCommand<Unit, Unit> ToggleSubagentsCommand { get; private set; } = null!;
 
     void InitializeProjections() {
@@ -256,6 +275,7 @@ public sealed partial class WorkContextViewModel {
         ToggleUsageCommand    = Toggle(() => UsageExpanded = !UsageExpanded);
         ToggleCheckoutCommand = Toggle(() => CheckoutExpanded = !CheckoutExpanded);
         ToggleSessionCommand  = Toggle(() => SessionExpanded = !SessionExpanded);
+        ToggleOutlineCommand  = Toggle(() => OutlineExpanded = !OutlineExpanded);
         _layout.PropertyChanged += OnLayoutChanged;
         _disposables.Add(System.Reactive.Disposables.Disposable.Create(() => _layout.PropertyChanged -= OnLayoutChanged));
         ToggleSubagentsCommand = Toggle(() => SubagentsExpanded = !SubagentsExpanded);

@@ -9,7 +9,21 @@ using ReactiveUI.Reactive;
 namespace Capacitor.App.ViewModels;
 
 /// One row of the Chat tab. Matched by DataTemplates on the concrete type.
-public abstract class ChatItemViewModel : ReactiveObject;
+public abstract class ChatItemViewModel : ReactiveObject {
+    /// The topic this row sits inside, if any; the chat draws its rail beside the row.
+    public ChatTopicItem? Topic { get; internal set; }
+
+    bool _startsTopic;
+    /// Whether the user marked this row as where a new topic starts.
+    public bool StartsTopic { get => _startsTopic; internal set => this.RaiseAndSetIfChanged(ref _startsTopic, value); }
+
+    /// Where a message row came from in its transcript; null for any other row, and for one built outside a feed.
+    public ChatMessageKey? Key { get; init; }
+
+    ChatBookmark? _bookmark;
+    /// The bookmark marking this whole message, if the user took one.
+    public ChatBookmark? Bookmark { get => _bookmark; internal set => this.RaiseAndSetIfChanged(ref _bookmark, value); }
+}
 
 public sealed class UserTurnItem(string text, IReadOnlyList<UserAttachment>? attachments = null, SenderLabel? sender = null,
     ChatTimestamp? time = null, bool undelivered = false) : ChatItemViewModel {

@@ -9,5 +9,7 @@ public sealed class WorkContextLayout : ReactiveObject {
 
     public bool CheckoutExpanded { get; set => this.RaiseAndSetIfChanged(ref field, value); }
 
+    public bool OutlineExpanded { get; set => this.RaiseAndSetIfChanged(ref field, value); } = true;
+
     public bool SessionExpanded { get; set => this.RaiseAndSetIfChanged(ref field, value); }
 }
