@@ -68,12 +68,10 @@ public sealed class ChatTopics : ReactiveObject {
     /// Every topic's header, in chat order.
     public AvaloniaList<ChatTopicItem> All { get; } = [];
 
-    bool _any;
-    public bool Any { get => _any; private set => this.RaiseAndSetIfChanged(ref _any, value); }
+    public bool Any { get; private set => this.RaiseAndSetIfChanged(ref field, value); }
 
-    bool _canEnd;
     /// Whether a topic is open at the end of the chat, for <see cref="End"/> to close.
-    public bool CanEnd { get => _canEnd; private set => this.RaiseAndSetIfChanged(ref _canEnd, value); }
+    public bool CanEnd { get; private set => this.RaiseAndSetIfChanged(ref field, value); }
 
     /// Starts a topic at the end of the chat for the message about to be sent. It stays at the end
     /// until that message lands, so rows that land first stay out of it.
@@ -410,7 +408,7 @@ public sealed class ChatTopics : ReactiveObject {
     }
 
     // A folded topic holds its end, if it has one.
-    static bool Ended(ChatTopicItem topic) => !topic.IsExpanded && topic.Hidden is [.., ChatTopicEndItem];
+    static bool Ended(ChatTopicItem topic) => topic is { IsExpanded: false, Hidden: [.., ChatTopicEndItem] };
 
     // The end of a topic's rows, an end of its own included, so folding takes the end in too. Marks
     // still waiting for their message stay out: they move once it lands.

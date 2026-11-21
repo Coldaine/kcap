@@ -80,8 +80,7 @@ public partial class App : Application {
     readonly AuthEndpoints    _endpoints  = AuthEndpoints.FromEnvironment();
     readonly UserHome   _userHome = UserHome.FromEnvironment();
 
-    LifecycleLog? _lifecycleLogInstance;
-    LifecycleLog LifecycleLog => _lifecycleLogInstance ??= new LifecycleLog(_config, _time, _userHome.Path,
+    LifecycleLog LifecycleLog => field ??= new LifecycleLog(_config, _time, _userHome.Path,
         closed: () => _uninstalling || _uninstallMode is not null);
     StartupMarks StartupMarks => field ??= new StartupMarks(LifecycleLog, _time, StartupMarks.CurrentProcessStart());
     TimeSpan? _windowBuild;
@@ -2683,7 +2682,7 @@ public partial class App : Application {
 
     // A hidden window shows no toast, and its toast overlay exists only once it has loaded.
     MainWindow TrackNoticeWindow(IAppNotifier notifier, MainWindow window) {
-        void Publish() => _noticeWindow.OnNext(window.IsVisible && window.IsLoaded ? notifier : null);
+        void Publish() => _noticeWindow.OnNext(window is { IsVisible: true, IsLoaded: true } ? notifier : null);
         var visible = window.GetObservable(Visual.IsVisibleProperty).Subscribe(_ => Publish());
         window.Loaded += (_, _) => Publish();
         window.Closed += (_, _) => {
