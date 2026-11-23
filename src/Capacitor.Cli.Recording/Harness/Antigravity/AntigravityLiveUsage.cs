@@ -57,9 +57,10 @@ internal static class AntigravityLiveUsage {
     /// Tracks Antigravity tool calls in flight from a transcript line: a PLANNER_RESPONSE adds
     /// its tool_calls count (excluding async subagent-orchestration calls, see
     /// <see cref="AsyncAntigravityToolCalls"/>); a result step (RUN_COMMAND/VIEW_FILE/
-    /// LIST_DIRECTORY/CODE_ACTION) removes one. Safe to call for any line — non-matching /
-    /// malformed lines are ignored — so the count reflects whether a (possibly long-running)
-    /// tool is awaiting its in-transcript result.
+    /// LIST_DIRECTORY/CODE_ACTION, or a GENERIC tool result carrying a <c>Created At:</c> header or
+    /// <c>error</c>) removes one. Non-tool GENERIC status notices (e.g. active-subagent counts) are
+    /// ignored. Safe to call for any line — non-matching / malformed lines are ignored — so the count
+    /// reflects whether a (possibly long-running) tool is awaiting its in-transcript result.
     /// </summary>
     internal static void UpdateAntigravityPendingToolCalls(WatchState state, string line) {
         try {
@@ -74,6 +75,7 @@ internal static class AntigravityLiveUsage {
                             .Count(tc => tc.Str("name") is { } name && !AsyncAntigravityToolCalls.Contains(name));
                     break;
                 case "RUN_COMMAND" or "VIEW_FILE" or "LIST_DIRECTORY" or "CODE_ACTION":
+                case "GENERIC" when IsGenericToolResult(root):
                     if (state.PendingAntigravityToolCalls > 0) state.PendingAntigravityToolCalls--;
                     break;
             }
@@ -81,6 +83,10 @@ internal static class AntigravityLiveUsage {
             // Never break the drain loop on a malformed line.
         }
     }
+
+    static bool IsGenericToolResult(JsonElement root) =>
+        (root.Str("content") is { } content && content.StartsWith("Created At:", StringComparison.Ordinal))
+     || root.Str("error") is { Length: > 0 };
 
     internal static string? TryGetAntigravityCreatedAt(string line) {
         try {

@@ -155,6 +155,41 @@ public class AntigravityTranscriptEventsTests {
         await Assert.That(result.HasResult).IsFalse();
     }
 
+    [Test]
+    public async Task A_generic_tool_result_pairs_with_the_waiting_call_while_status_notices_are_ignored() {
+        var ctx   = Context();
+        var calls = Project(Planner(2, $"{Call("read_file")},{Call("run_command")}"), ctx);
+
+        // Non-tool GENERIC status notice must emit nothing and leave waiting calls intact.
+        await Assert.That(Project("""{"step_index":3,"source":"MODEL","type":"GENERIC","content":"You have 2 active subagent(s)"}""", ctx)).IsEmpty();
+
+        var first  = Project("""{"step_index":4,"source":"MODEL","type":"GENERIC","status":"DONE","created_at":"2026-11-22T22:50:26Z","content":"Created At: 2026-11-22T16:50:26-06:00\nfile body"}""", ctx).Single();
+        var second = Project("""{"step_index":5,"source":"MODEL","type":"GENERIC","status":"DONE","created_at":"2026-11-22T22:50:27Z","content":"Created At: 2026-11-22T16:50:27-06:00\nboom","error":"exit code 1"}""", ctx).Single();
+
+        await Assert.That(CallIdOfResult(first)).IsEqualTo(CallIdOf(calls[0]));
+        await Assert.That(((ToolResultReceived)first.Payload).Extensions.ContainsKey(AntigravityExtension.Slug)).IsFalse();
+        await Assert.That(CallIdOfResult(second)).IsEqualTo(CallIdOf(calls[1]));
+        await Assert.That(((ToolResultReceived)second.Payload).Extensions.ContainsKey(AntigravityExtension.Slug)).IsTrue();
+    }
+
+    [Test]
+    public async Task A_planner_with_inline_token_counts_emits_a_usage_sibling_and_folds_reasoning_into_output() {
+        const string line = """{"step_index":148,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-22T22:50:36Z","model":"gemini-4-argon-medium","input_tokens":19489,"cache_read_tokens":23783,"cache_write_tokens":12,"output_tokens":234,"reasoning_tokens":50,"content":"Done."}""";
+        var id = TranscriptIds.AntigravityStep(line);
+
+        var events = Project(line, Context());
+
+        await Assert.That(events.Select(e => e.EventType)).IsEquivalentTo([
+            CanonicalEventTypes.AssistantTextGenerated,
+            CanonicalEventTypes.AntigravityUsageBackfilled,
+        ], CollectionOrdering.Matching);
+        var usage = events[1];
+        await Assert.That(usage.EventId).IsEqualTo(TranscriptIds.Sibling(id, "usage"));
+        await Assert.That(usage.Payload).IsEqualTo(new AntigravityUsageBackfill {
+            Model = "gemini-4-argon-medium", InputTokens = 19489, OutputTokens = 234 + 50, CacheReadTokens = 23783, CacheWriteTokens = 12,
+        });
+    }
+
     // ── failures ──────────────────────────────────────────────────────────────
 
     [Test]

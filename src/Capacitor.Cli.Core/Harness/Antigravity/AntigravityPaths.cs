@@ -42,6 +42,9 @@ public sealed class AntigravityPaths(GeminiPaths gemini) {
     /// right place for anything scoped to a CLI invocation.</summary>
     public string CliConfigRoot => Path.Combine(gemini.Root, "antigravity-cli");
 
+    /// <summary>The Antigravity IDE's product data root: <c>&lt;gemini-root&gt;/antigravity-ide</c>.</summary>
+    public string IdeConfigRoot => Path.Combine(gemini.Root, "antigravity-ide");
+
     /// <summary>The <c>agy</c> CLI's settings file: <c>&lt;cli-config&gt;/settings.json</c>. A DIFFERENT
     /// file from both <see cref="McpConfigJson"/> (Antigravity's MCP server list) and the Gemini CLI's
     /// <c>~/.gemini/settings.json</c>. Holds the CLI's own preferences plus the <c>permissions.allow</c>
@@ -59,14 +62,15 @@ public sealed class AntigravityPaths(GeminiPaths gemini) {
     public string SkillsDir => Path.Combine(gemini.Root, "skills");
 
     /// <summary>
-    /// The two product roots one <c>antigravity</c> vendor writes conversations under — the GUI's
-    /// <see cref="Root"/> and the CLI's <see cref="CliConfigRoot"/> — in a fixed order (GUI first).
-    /// Returned whether or not each exists; callers filter by presence. Import enumerates BOTH so an
-    /// <c>agy</c> conversation is not invisible to <c>kcap import --antigravity</c>. Conversation ids
-    /// are UUIDs, unique across roots, so a chain never spans roots (a child's <c>messages/</c> dir
+    /// The three product roots one <c>antigravity</c> vendor writes conversations under — Antigravity
+    /// 2.0 (<see cref="Root"/>), the CLI (<see cref="CliConfigRoot"/>), and the IDE
+    /// (<see cref="IdeConfigRoot"/>) — in a fixed order.
+    /// Returned whether or not each exists; callers filter by presence. Import enumerates ALL so
+    /// conversations from any surface are not invisible to <c>kcap import --antigravity</c>. Conversation
+    /// ids are UUIDs, unique across roots, so a chain never spans roots (a child's <c>messages/</c> dir
     /// lives beside its parent under one root) and per-root processing needs no cross-root dedup.
     /// </summary>
-    public IReadOnlyList<string> BrainProductRoots => [Root, CliConfigRoot];
+    public IReadOnlyList<string> BrainProductRoots => [Root, CliConfigRoot, IdeConfigRoot];
 
     /// <summary>Per-conversation "brain" dir: <c>&lt;root&gt;/brain/&lt;id&gt;</c> (GUI root).</summary>
     public string BrainDir(string conversationId) => BrainDirUnder(Root, conversationId);
@@ -147,7 +151,7 @@ public sealed class AntigravityPaths(GeminiPaths gemini) {
         return string.IsNullOrEmpty(convId) ? null : (root, convId);
     }
 
-    /// <summary>Whether Antigravity has run here. Either root counts: one vendor over two surfaces
-    /// sharing one plugin config, so an agy-only machine must read as a GUI one does.</summary>
-    public bool HasUserData() => Directory.Exists(Root) || Directory.Exists(CliConfigRoot);
+    /// <summary>Whether Antigravity has run here. Any product root counts: one vendor over three
+    /// surfaces sharing one plugin config, so an agy-only or IDE-only machine reads as installed.</summary>
+    public bool HasUserData() => Directory.Exists(Root) || Directory.Exists(CliConfigRoot) || Directory.Exists(IdeConfigRoot);
 }

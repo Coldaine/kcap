@@ -63,6 +63,7 @@ public sealed partial class AntigravityTranscriptEvents : ITranscriptProjection,
                 "USER_INPUT"       => User(root, step),
                 "PLANNER_RESPONSE" => Planner(root, step, receivedAt, ctx),
                 "RUN_COMMAND" or "CODE_ACTION" or "VIEW_FILE" or "LIST_DIRECTORY" => Result(root, type, step, ctx),
+                "GENERIC" when IsGenericToolResult(root) => Result(root, type, step, ctx),
                 "USAGE"            => Usage(root, step, ctx),
                 _                  => ProjectionResult.Empty,
             };
@@ -136,12 +137,38 @@ public sealed partial class AntigravityTranscriptEvents : ITranscriptProjection,
             }
         }
 
+        if (HasInlineUsage(root)) {
+            var at = step.At.AddTicks(events.Count);
+            var backfill = new AntigravityUsageBackfill {
+                Model            = root.Str("model"),
+                InputTokens      = root.Num("input_tokens") ?? 0,
+                OutputTokens     = (root.Num("output_tokens") ?? 0) + (root.Num("reasoning_tokens") ?? 0),
+                CacheReadTokens  = root.Num("cache_read_tokens") ?? 0,
+                CacheWriteTokens = root.Num("cache_write_tokens") ?? 0,
+            };
+            events.Add(new(CanonicalEventTypes.AntigravityUsageBackfilled, backfill, TranscriptIds.Sibling(step.Id, "usage"), at, step.RecordTimestamp));
+        }
+
         if (ctx.Claimed.TryGetValue(step.Id, out var claimed))
             foreach (var held in claimed) events.Add(Held(held, ctx.PairedCallIds[held.EventId]));
 
         Claim(step, events, ctx);
         return ProjectionResult.Of(events);
     }
+
+    /// Current Antigravity CLI records tool results as <c>GENERIC</c> steps with a <c>Created At:</c>
+    /// header (or an <c>error</c> field), while non-tool <c>GENERIC</c> status notices (e.g. active
+    /// subagent counts) carry neither.
+    static bool IsGenericToolResult(JsonElement root) =>
+        (root.Str("content") is { } content && content.StartsWith("Created At:", StringComparison.Ordinal))
+     || root.Str("error") is { Length: > 0 };
+
+    static bool HasInlineUsage(JsonElement root) =>
+        root.Num("input_tokens") is not null
+     || root.Num("output_tokens") is not null
+     || root.Num("cache_read_tokens") is not null
+     || root.Num("cache_write_tokens") is not null
+     || root.Num("reasoning_tokens") is not null;
 
     /// Pairs held results with waiting calls, lowest step first, whatever order they were held in. Only a result
     /// at a higher step than this planner's can be one of its calls'; the rest stay held for a later planner.
