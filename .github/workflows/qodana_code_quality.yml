@@ -32,7 +32,7 @@ jobs:
     steps:
       # PR mode analyses the merge-base and the head, so it needs the history and the head, not
       # GitHub's merge commit
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
@@ -46,7 +46,7 @@ jobs:
       # Only main's scans save, so a PR restores the entry main's last scan left
       - name: Restore the Qodana cache
         if: ${{ !inputs.clean-cache }}
-        uses: actions/cache/restore@v6
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/qodana/caches
           key: ${{ env.QODANA_CACHE_KEY }}
@@ -58,7 +58,7 @@ jobs:
           python3 -I .github/scripts/qodana_mtimes.py record "$RUNNER_TEMP/qodana/caches/mtimes.tsv"
 
       - name: 'Qodana Scan'
-        uses: JetBrains/qodana-action@v2026.2
+        uses: JetBrains/qodana-action@aa698739cd4b8204ad53291bea7e16cd75da3c9f # v2026.3.1
         with:
           args: --linter qodana-dotnet --within-docker false
           cache-dir: ${{ runner.temp }}/qodana/caches
@@ -90,7 +90,7 @@ jobs:
           done
       - name: Save the Qodana cache
         if: github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/qodana/caches
           key: ${{ env.QODANA_CACHE_KEY }}

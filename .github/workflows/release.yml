@@ -17,7 +17,7 @@ jobs:
     steps:
       # CI passed exists only once every other CI job has finished, so discovery waits that long.
       - name: Wait for CI workflow to succeed
-        uses: lewagon/wait-on-check-action@v1.9.1
+        uses: lewagon/wait-on-check-action@369769072fe522a3a8a85c03c96af1e5242a1994 # v1.9.1
         with:
           ref: ${{ github.sha }}
           check-name: CI passed
@@ -31,10 +31,10 @@ jobs:
     name: Refuse a moved or re-cut release tag
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
 
@@ -84,10 +84,10 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
@@ -102,7 +102,7 @@ jobs:
         run: echo "TAG=$(bash scripts/npm-dist-tag.sh "$VERSION")" >> "$GITHUB_OUTPUT"
 
       - name: Download all npm artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: npm-*
           path: npm-artifacts/
@@ -199,7 +199,7 @@ jobs:
       DEST: s3://${{ secrets.R2_BUCKET }}/cli
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # The same rule picks the npm dist-tag, so GitHub and npm agree on what a prerelease is.
       - name: Derive release channel
@@ -207,7 +207,7 @@ jobs:
         run: echo "TAG=$(bash scripts/npm-dist-tag.sh "$VERSION")" >> "$GITHUB_OUTPUT"
 
       - name: Download all release archives
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: release-*
           path: release-artifacts/
@@ -236,13 +236,13 @@ jobs:
           esac
 
       - name: Upload the install manifest
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: cli-manifest
           path: kcap-manifest.json
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           files: release-artifacts/*
           generate_release_notes: true
@@ -263,10 +263,10 @@ jobs:
       queue: max
     env: *cli-bucket
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download the install manifest
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: cli-manifest
 
@@ -392,7 +392,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Check the manifest signing key
         env:
@@ -420,7 +420,7 @@ jobs:
       RID: ${{ matrix.rid }}
       AUTHENTICODE: ${{ matrix.authenticode && vars.ARTIFACT_SIGNING_PROFILE != '' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Extract version from tag
         id: version
@@ -450,7 +450,7 @@ jobs:
       # kcap-server is private. An installation token lasts an hour, which bounds the wait below.
       - name: Get a token that reads kcap-server
         id: server-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
         with:
           client-id: ${{ vars.KURRENT_CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.KURRENT_CI_APP_PRIVATE_KEY }}
@@ -559,7 +559,7 @@ jobs:
           cp "${{ steps.download.outputs.ARCHIVE }}" "out/${{ steps.download.outputs.NAME }}.tar.gz"
 
       - name: Upload the archive
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: local-bundle-${{ matrix.rid }}
           path: out/
@@ -578,7 +578,7 @@ jobs:
     steps:
       - name: Get a token that reads kcap-server
         id: server-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
         with:
           client-id: ${{ vars.KURRENT_CI_APP_CLIENT_ID }}
           private-key: ${{ secrets.KURRENT_CI_APP_PRIVATE_KEY }}
@@ -601,7 +601,7 @@ jobs:
           done
 
       - name: Download the signed archive
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: local-bundle-osx-arm64
           path: local/
@@ -638,7 +638,7 @@ jobs:
           echo "::error::The osx-arm64 smoke test did not pass (${{ needs.local-smoke.result }}); its bundle is not published."
           exit 1
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Extract version from tag
         id: version
@@ -646,7 +646,7 @@ jobs:
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Download the archive
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: local-bundle-${{ matrix.rid }}
           path: local/
