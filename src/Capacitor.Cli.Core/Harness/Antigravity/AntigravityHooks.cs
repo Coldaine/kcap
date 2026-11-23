@@ -13,20 +13,26 @@ namespace Capacitor.Cli.Core.Harness.Antigravity;
 /// (<c>PreToolUse</c>/<c>PostToolUse</c>) use <c>[{ matcher, hooks:[…] }]</c>; lifecycle
 /// events (<c>PreInvocation</c>/<c>PostInvocation</c>/<c>Stop</c>) use a DIRECT handler
 /// list <c>[{ type, command, timeout }]</c> (a matcher there is silently ignored / can
-/// suppress the hook). The payload carries NO event-name field, so each event gets a
-/// DISTINCT command (<c>kcap hook --antigravity &lt;Event&gt;</c>) rather than one
-/// self-routing dispatcher. The command must be fast + always exit 0 (control hook).
+/// suppress the hook). Antigravity's <c>timeout</c> is in <b>seconds</b> (default 30).
+/// Only <c>PreInvocation</c> is registered because the dispatcher is a no-op for every
+/// other event (the watcher owns transcript tailing and idle session-end); registering
+/// <c>PostInvocation</c>/<c>Stop</c>/<c>PreToolUse</c>/<c>PostToolUse</c> would spawn
+/// dead hook processes on every tool call and turn. <see cref="BlockReferencesKcap"/>
+/// still inspects nested <c>hooks[]</c> entries so older 5-event installs remain
+/// detectable for upgrade and uninstall.
 /// </summary>
 public static class AntigravityHooks {
     public const string BlockName = "kcap";
 
-    /// <summary>Lifecycle events — direct handler list (no matcher).</summary>
-    public static readonly string[] LifecycleEvents = ["PreInvocation", "PostInvocation", "Stop"];
+    /// <summary>Lifecycle events — direct handler list (no matcher). Only <c>PreInvocation</c>
+    /// is actionable; the watcher owns transcript capture and session-end.</summary>
+    public static readonly string[] LifecycleEvents = ["PreInvocation"];
 
-    /// <summary>Tool events — matcher + nested <c>hooks[]</c>.</summary>
-    public static readonly string[] ToolEvents = ["PreToolUse", "PostToolUse"];
+    /// <summary>Tool events — none registered; the watcher tails the transcript directly.</summary>
+    public static readonly string[] ToolEvents = [];
 
-    const int TimeoutMs = 15000;
+    /// <summary>Antigravity's hook <c>timeout</c> is in seconds (default 30).</summary>
+    const int TimeoutSeconds = 15;
 
     public static string HookCommand(string @event) => $"kcap hook --antigravity {@event}";
 
@@ -34,7 +40,7 @@ public static class AntigravityHooks {
         new() {
             ["type"]    = "command",
             ["command"] = HookCommand(@event),
-            ["timeout"] = TimeoutMs
+            ["timeout"] = TimeoutSeconds
         };
 
     /// <summary>Semver of the kcap plugin's manifest/hook layout (NOT the kcap build version —

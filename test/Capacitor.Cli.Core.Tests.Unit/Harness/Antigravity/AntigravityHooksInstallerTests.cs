@@ -11,28 +11,41 @@ namespace Capacitor.Cli.Core.Tests.Unit.Harness.Antigravity;
 /// </summary>
 public class AntigravityHooksInstallerTests {
     [Test]
-    public async Task Install_writes_kcap_block_with_both_entry_shapes() {
+    public async Task Install_writes_pre_invocation_only_with_seconds_timeout() {
         using var dir = TempDir.WithPathTo("hooks.json", out var path);
         AntigravityHooksInstaller.Install(path);
 
         var root  = (JsonObject)JsonNode.Parse(await File.ReadAllTextAsync(path))!;
         var block = (JsonObject)root[AntigravityHooks.BlockName]!;
 
-        // Lifecycle event: DIRECT handler list, distinct per-event command.
-        var stop = (JsonArray)block["Stop"]!;
-        await Assert.That((string?)stop[0]!["command"]).IsEqualTo("kcap hook --antigravity Stop");
-        await Assert.That(stop[0]!["matcher"]).IsNull();
+        // Only PreInvocation is registered (direct handler list, no matcher, timeout in seconds).
+        var pre = (JsonArray)block["PreInvocation"]!;
+        await Assert.That((string?)pre[0]!["command"]).IsEqualTo("kcap hook --antigravity PreInvocation");
+        await Assert.That((int?)pre[0]!["timeout"]).IsEqualTo(15);
+        await Assert.That(pre[0]!["matcher"]).IsNull();
 
-        // Tool event: matcher + nested hooks[].
-        var pre = (JsonArray)block["PreToolUse"]!;
-        await Assert.That((string?)pre[0]!["matcher"]).IsEqualTo("*");
-        await Assert.That((string?)pre[0]!["hooks"]![0]!["command"]).IsEqualTo("kcap hook --antigravity PreToolUse");
-
-        // All five events present.
-        foreach (var e in AntigravityHooks.LifecycleEvents.Concat(AntigravityHooks.ToolEvents))
-            await Assert.That(block.ContainsKey(e)).IsTrue();
+        await Assert.That(block.Count).IsEqualTo(1);
+        await Assert.That(block.ContainsKey("PostInvocation")).IsFalse();
+        await Assert.That(block.ContainsKey("Stop")).IsFalse();
+        await Assert.That(block.ContainsKey("PreToolUse")).IsFalse();
+        await Assert.That(block.ContainsKey("PostToolUse")).IsFalse();
 
         await Assert.That(AntigravityHooksInstaller.IsInstalled(path)).IsTrue();
+    }
+
+    // Legacy 5-event blocks (including nested tool hooks[]) from older installs must still be
+    // recognized so upgrade/remove can detect and replace them cleanly.
+    [Test]
+    public async Task BlockReferencesKcap_still_detects_legacy_tool_and_lifecycle_blocks() {
+        var legacyTool = JsonNode.Parse("""
+            {"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"kcap hook --antigravity PreToolUse","timeout":15000}]}]}
+            """);
+        var legacyStop = JsonNode.Parse("""
+            {"Stop":[{"type":"command","command":"kapacitor hook --antigravity Stop","timeout":15000}]}
+            """);
+
+        await Assert.That(AntigravityHooks.BlockReferencesKcap(legacyTool)).IsTrue();
+        await Assert.That(AntigravityHooks.BlockReferencesKcap(legacyStop)).IsTrue();
     }
 
     // GUI re-test: the GUI only loads a plugin dir that contains a plugin.json
