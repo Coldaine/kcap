@@ -32,7 +32,7 @@ jobs:
       projects: ${{ steps.select.outputs.projects }}
       scope: ${{ steps.select.outputs.scope }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 2
 
@@ -93,7 +93,7 @@ jobs:
           - { leg: windows-latest-others, os: windows-latest, shard: others, modules: 2, tests: 2, build: all,       analyzers: true }
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # A selection runs through a solution filter, so the module and width caps apply to it unchanged.
       # A shard keeps its part of the selection; an empty result skips the tests, and on a
@@ -252,7 +252,7 @@ jobs:
       - name: Upload test reports
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: test-reports-${{ matrix.leg }}-attempt-${{ github.run_attempt }}
           path: |
@@ -274,7 +274,7 @@ jobs:
     # Measured at 7.5m; this only has to catch a wedge.
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup .NET
         uses: ./.github/actions/setup-dotnet
@@ -306,7 +306,7 @@ jobs:
     name: Comment rules
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: ./.github/actions/setup-comment-rules
       - name: No Linear issue IDs
         run: bash scripts/check-linear-ids.sh
@@ -332,7 +332,7 @@ jobs:
     steps:
       # Full history and tags: MinVer derives the version from the nearest tag, and a shallow checkout
       # computes a default below the app's CLI floor.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           fetch-tags: true

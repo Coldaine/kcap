@@ -27,7 +27,7 @@ outputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-java@v6
+    - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6
       with:
         distribution: temurin
         java-version: '21'
@@ -48,7 +48,7 @@ runs:
           echo "ARTIFACT_SIGNING_PROFILE=$PROFILE"
         } >> "$GITHUB_ENV"
 
-    - uses: azure/login@v3
+    - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3
       with:
         client-id: ${{ inputs.client-id }}
         tenant-id: ${{ inputs.tenant-id }}
