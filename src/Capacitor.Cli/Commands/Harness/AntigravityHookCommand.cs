@@ -53,6 +53,10 @@ sealed class AntigravityHookCommand(
     /// kills the hook outright: PreInvocation blocks the turn, and that firing never retries.</summary>
     static readonly TimeSpan Ceiling = TimeSpan.FromSeconds(5);
 
+    /// <summary>Bound on the nudge claim's store work. Started alongside the memory fetch so a
+    /// local disk lease finishes well before the single JSON envelope is written.</summary>
+    static readonly TimeSpan NudgeClaimBudget = TimeSpan.FromMilliseconds(750);
+
     public Task<int> Handle(string[] args) => Handle(args, Console.In, Console.Out);
 
     internal async Task<int> Handle(
@@ -200,6 +204,14 @@ sealed class AntigravityHookCommand(
             SessionStartMemoryHookSupport.FlowsLaneDisabled(HarnessId.Antigravity, harnesses, audience: audience),
             budget.Remaining);
 
+        // PreInvocation fires before every model call and invocationNum resets to 0 on every user
+        // turn (omitted on the wire by protojson at 0, then 1 after the first tool call), so a
+        // payload counter cannot tell the first callback of a conversation from a later turn.
+        // Gate the unleased nudges behind the same durable once-per-session disk claim Kiro uses
+        // (fail-closed on repeat, unusable id, or unavailable store). Started alongside the memory
+        // fetch so local disk work overlaps the HTTP calls.
+        var nudgeClaim = NudgeLease.TryClaimAsync(config, clock.Time, HarnessId.Antigravity, sessionId, NudgeClaimBudget);
+
         // Spawn-before-post. Route through the shared spool-aware poster — a lapse/outage durably spools the
         // payload for a later drain AND still proceeds to spawn the watcher, so capture never
         // depends on lifecycle-POST delivery. Only a permanent Failed withholds the watcher.
@@ -219,10 +231,9 @@ sealed class AntigravityHookCommand(
         // subtracts HookBudget.Safety — do NOT subtract it again. Written even when the watcher-spawn
         // gate below returns early — a withheld watcher must not suppress injection.
         var fragment = await SessionStartMemoryHookSupport.AwaitBounded(memoryTask, budget);
-        // Nudges are unleased pure functions of the session id, so on this repeating callback they
-        // must be gated by the vendor's own per-conversation counter: without the gate every turn
-        // re-injects them as another persistent userMessage step.
-        var workItemsNudge = IsFirstInvocation(payload)
+        // Antigravity consumes a single JSON envelope on stdout, so unlike Kiro's raw text stream
+        // the nudge claim is awaited bounded before the sole write (fail-closed on expiry/error).
+        var workItemsNudge = await NudgeLease.AwaitBoundedAsync(nudgeClaim, budget)
             ? HarnessNudgeEmitter.Combine(
                 SessionNudges.Resolve(HarnessId.Antigravity, sessionId, activeProfile, harnesses, PlanEntitlementStore.Get(Url, config, clock.Time.GetUtcNow()), audience, cwd, home),
                 HarnessNudgeEmitter.ResolveFragmentForHook(activeProfile?.DisableHarnessNudge is true || !audience.GetsOnboarding, config, harnesses, clock.Time),
@@ -324,17 +335,6 @@ sealed class AntigravityHookCommand(
             return null;
         }
     }
-
-    /// <summary>
-    /// Whether this PreInvocation is the conversation's first, read from the vendor's own
-    /// <c>invocationNum</c> counter — the one payload field that varies between callbacks. Any value
-    /// at or below one reads as first, and so does an absent or non-numeric one: a payload without a
-    /// usable counter cannot distinguish callbacks, and emitting once too often beats never emitting.
-    /// </summary>
-    internal static bool IsFirstInvocation(JsonObject payload) =>
-        payload["invocationNum"] is not JsonValue value
-     || !value.TryGetValue<long>(out var invocation)
-     || invocation <= 1;
 
     /// <summary>The event name — the first positional token after <c>--antigravity</c>.</summary>
     internal static string? EventArg(string[] args) {
