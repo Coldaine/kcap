@@ -1,3 +1,4 @@
+using Capacitor.Cli.Commands;
 using Capacitor.Cli.Core;
 using Capacitor.Cli.SessionStartMemory;
 using Capacitor.Cli.Core.Harness;
@@ -67,5 +68,29 @@ public class NudgeLeaseTests {
         var config = new ConfigRoot(Path.Combine(file, "under-a-file"));
 
         await Assert.That(await NudgeLease.TryClaimAsync(config, TimeProvider.System, HarnessId.Kiro, "kiro-session", Budget)).IsFalse();
+    }
+
+    // Antigravity conversation ids arrive dashed on PreInvocation and are normalized dashless by
+    // the hook; dashed/dashless spellings collapse to one claim, and non-GUID ids fail closed.
+    [Test]
+    public async Task antigravity_guid_spellings_collapse_to_one_claim_and_non_guid_fails_closed() {
+        using var root = new TempDir();
+        var store = Store(root);
+
+        await Assert.That(await NudgeLease.TryClaimAsync(
+            store, HarnessId.Antigravity, "e80c33bf-c10f-4d2f-b626-b0043f488fc0", Budget, TimeProvider.System)).IsTrue();
+        await Assert.That(await NudgeLease.TryClaimAsync(
+            store, HarnessId.Antigravity, "e80c33bfc10f4d2fb626b0043f488fc0", Budget, TimeProvider.System)).IsFalse();
+        await Assert.That(await NudgeLease.TryClaimAsync(
+            store, HarnessId.Antigravity, "not-a-guid", Budget, TimeProvider.System)).IsFalse();
+    }
+
+    [Test]
+    public async Task await_bounded_fails_closed_when_pending_and_budget_is_exhausted() {
+        var never = new TaskCompletionSource<bool>().Task;
+        var budget = new HookBudget(new HookClock(TimeProvider.System), TimeSpan.Zero);
+
+        await Assert.That(await NudgeLease.AwaitBoundedAsync(never, budget)).IsFalse();
+        await Assert.That(await NudgeLease.AwaitBoundedAsync(Task.FromResult(true), budget)).IsTrue();
     }
 }

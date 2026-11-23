@@ -97,6 +97,28 @@ public class AntigravityWatchExtractorTests {
     }
 
     [Test]
+    public async Task PendingToolCalls_decrements_for_generic_tool_results_and_ignores_generic_status_notices() {
+        var state = new Core.WatchState();
+
+        AntigravityLiveUsage.UpdateAntigravityPendingToolCalls(state,
+            """{"type":"PLANNER_RESPONSE","tool_calls":[{"name":"read_file"},{"name":"run_command"}]}""");
+        await Assert.That(state.PendingAntigravityToolCalls).IsEqualTo(2);
+
+        // Non-tool GENERIC notice (no Created At header, no error) must not falsely clear a tool call.
+        AntigravityLiveUsage.UpdateAntigravityPendingToolCalls(state,
+            """{"type":"GENERIC","content":"You have 2 active subagent(s)"}""");
+        await Assert.That(state.PendingAntigravityToolCalls).IsEqualTo(2);
+
+        // Current Antigravity CLI records tool results as GENERIC steps with Created At / error.
+        AntigravityLiveUsage.UpdateAntigravityPendingToolCalls(state,
+            """{"type":"GENERIC","content":"Created At: 2026-11-22T16:50:26-06:00\nShowing lines 1-5"}""");
+        await Assert.That(state.PendingAntigravityToolCalls).IsEqualTo(1);
+        AntigravityLiveUsage.UpdateAntigravityPendingToolCalls(state,
+            """{"type":"GENERIC","error":"command failed"}""");
+        await Assert.That(state.PendingAntigravityToolCalls).IsEqualTo(0);
+    }
+
+    [Test]
     public async Task ShouldEndOnIdle_suppressed_while_a_tool_is_in_flight() {
         var now  = DateTimeOffset.UnixEpoch.AddHours(5);
         var idle = TimeSpan.FromMinutes(60);

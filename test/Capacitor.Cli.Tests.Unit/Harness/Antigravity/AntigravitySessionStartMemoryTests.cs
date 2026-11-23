@@ -1,5 +1,8 @@
+using System.Globalization;
 using Capacitor.Cli.Commands.Harness;
 using Capacitor.Cli.Commands;
+using Capacitor.Cli.Core.Config;
+using Capacitor.Cli.Core.Harness.Antigravity;
 using Capacitor.Cli.SessionStartMemory;
 using Capacitor.Cli.Tests.Unit.SessionStartMemory;
 using Capacitor.Cli.Core.Harness;
@@ -267,26 +270,129 @@ public class AntigravitySessionStartMemoryTests {
         await Assert.That(consulted).IsTrue();
     }
 
-    // The nudges carry no lease, so on this repeating callback only the invocation counter keeps
-    // them from re-injecting a persistent userMessage step every turn.
+    // ---- once-per-conversation nudge claim across repeating PreInvocation callbacks ----
+    //
+    // PreInvocation fires before every model call and invocationNum is 0-indexed per user turn
+    // (omitted on the wire by protojson at 0, then 1 after the first tool call, then reset to 0 on
+    // the next user message). Gating on invocationNum therefore emitted twice per turn; NudgeLease
+    // gates once per conversation on disk and fails closed.
+
+    void NeutralizeWatcherSpawn(string conversationId) {
+        var dir = Config.PathTo("watchers");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(
+            Path.Combine(dir, $"{conversationId.Replace("-", "")}.pid"),
+            Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
+    }
+
+    async Task SeedAntigravityMcpAsync() {
+        var mcpPath = TestHarnesses.Under(Home).Of<AntigravityHarness>().Paths.McpConfigJson;
+        Directory.CreateDirectory(Path.GetDirectoryName(mcpPath)!);
+        await File.WriteAllTextAsync(mcpPath, """{"mcpServers":{"kcap-memory":{"command":"kcap","args":["mcp","memory"]}}}""");
+    }
+
+    async Task SeedNudgeOnlyProfileAsync(string serverUrl) {
+        await ConfigMutator.MutateAsync(Config.Root, _ => new ProfileConfig {
+            ActiveProfile = "work",
+            Profiles = new() {
+                ["work"] = new Profile {
+                    ServerUrl                = serverUrl,
+                    DisableMemoryIndex       = true,
+                    DisableSessionGuidelines = true,
+                    DisableWorkItemsNudge    = true,
+                    DisablePlansNudge        = true,
+                    DisableHarnessNudge      = true,
+                    DisableFirstRunNotice    = true,
+                }
+            }
+        });
+    }
+
+    static string PreInvocationPayload(string conversationId, int? invocationNum = null) =>
+        invocationNum is { } n
+            ? $$"""{"conversationId":"{{conversationId}}","transcriptPath":"/tmp/t.jsonl","workspacePaths":["/repo"],"invocationNum":{{n}}}"""
+            : $$"""{"conversationId":"{{conversationId}}","transcriptPath":"/tmp/t.jsonl","workspacePaths":["/repo"]}""";
 
     [Test]
-    public async Task The_first_invocation_emits_nudges() {
-        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":1}"""))).IsTrue();
+    public async Task Repeated_PreInvocation_emits_nudges_once_per_conversation_even_when_invocationNum_resets() {
+        const string conversationId = "e80c33bf-c10f-4d2f-b626-b0043f488fc0";
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/hooks/session-start/antigravity").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
+
+        NeutralizeWatcherSpawn(conversationId);
+        await SeedAntigravityMcpAsync();
+        await SeedNudgeOnlyProfileAsync(server.Url!);
+
+        async Task<string> InvokeAsync(int? invocationNum) {
+            var sw   = new StringWriter();
+            var code = await Hook(server.Url!).Handle(
+                ["--antigravity", "PreInvocation"],
+                new StringReader(PreInvocationPayload(conversationId, invocationNum)),
+                sw);
+            await Assert.That(code).IsEqualTo(0);
+            return sw.ToString();
+        }
+
+        // Turn 1, model call 0 (protojson omits invocationNum == 0): emits once.
+        var turn1Call0 = await InvokeAsync(invocationNum: null);
+        await Assert.That(turn1Call0).Contains("injectSteps");
+        await Assert.That(turn1Call0).Contains("kcap session id");
+
+        // Turn 1, model call 1 (after first tool call): must write zero bytes.
+        await Assert.That(await InvokeAsync(invocationNum: 1)).IsEqualTo("");
+
+        // Turn 2, model call 0 (counter resets to 0, omitted again) and call 1: must write zero bytes.
+        await Assert.That(await InvokeAsync(invocationNum: null)).IsEqualTo("");
+        await Assert.That(await InvokeAsync(invocationNum: 1)).IsEqualTo("");
     }
 
     [Test]
-    public async Task A_later_invocation_suppresses_nudges() {
-        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":2}"""))).IsFalse();
-        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":97}"""))).IsFalse();
+    public async Task Distinct_conversations_each_emit_nudges_once() {
+        const string convA = "11111111-1111-4111-8111-111111111111";
+        const string convB = "22222222-2222-4222-8222-222222222222";
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/hooks/session-start/antigravity").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
+
+        NeutralizeWatcherSpawn(convA);
+        NeutralizeWatcherSpawn(convB);
+        await SeedAntigravityMcpAsync();
+        await SeedNudgeOnlyProfileAsync(server.Url!);
+
+        var outA = new StringWriter();
+        await Hook(server.Url!).Handle(["--antigravity", "PreInvocation"], new StringReader(PreInvocationPayload(convA)), outA);
+        var outB = new StringWriter();
+        await Hook(server.Url!).Handle(["--antigravity", "PreInvocation"], new StringReader(PreInvocationPayload(convB)), outB);
+        var outBRepeat = new StringWriter();
+        await Hook(server.Url!).Handle(["--antigravity", "PreInvocation"], new StringReader(PreInvocationPayload(convB)), outBRepeat);
+
+        await Assert.That(outA.ToString()).Contains(convA.Replace("-", ""));
+        await Assert.That(outB.ToString()).Contains(convB.Replace("-", ""));
+        await Assert.That(outBRepeat.ToString()).IsEqualTo("");
     }
 
-    // Fail-open: a payload whose counter cannot mark a later turn — missing, non-numeric, or below
-    // the genuine first value of one — must still emit.
+    // Fail-closed: if the lease store root cannot be created, suppress the nudge rather than
+    // repeating a persistent userMessage step on every turn.
     [Test]
-    public async Task A_missing_or_unusable_counter_reads_as_the_first_invocation() {
-        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("{}"))).IsTrue();
-        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":"2"}"""))).IsTrue();
-        await Assert.That(AntigravityHookCommand.IsFirstInvocation(Payload("""{"invocationNum":0}"""))).IsTrue();
+    public async Task Nudge_claim_fails_closed_when_lease_store_is_unusable() {
+        const string conversationId = "33333333-3333-4333-8333-333333333333";
+        using var server = WireMockServer.Start();
+        server.Given(Request.Create().WithPath("/hooks/session-start/antigravity").UsingPost())
+            .RespondWith(Response.Create().WithStatusCode(200).WithBody("{}"));
+
+        NeutralizeWatcherSpawn(conversationId);
+        await SeedAntigravityMcpAsync();
+        await SeedNudgeOnlyProfileAsync(server.Url!);
+        MemoryStoreProbe.Poison(Config.Root);
+
+        var sw   = new StringWriter();
+        var code = await Hook(server.Url!).Handle(
+            ["--antigravity", "PreInvocation"],
+            new StringReader(PreInvocationPayload(conversationId)),
+            sw);
+
+        await Assert.That(code).IsEqualTo(0);
+        await Assert.That(sw.ToString()).IsEqualTo("");
     }
 }

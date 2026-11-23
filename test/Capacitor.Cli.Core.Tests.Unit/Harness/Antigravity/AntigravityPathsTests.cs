@@ -82,36 +82,40 @@ public class AntigravityPathsTests {
             .IsEqualTo(Path.Combine("/repo", ".agents", "plugins", "kcap", "hooks.json"));
     }
 
-    // The agy-only row is the one that matters: CLI root present, GUI root absent must still detect,
-    // or the plugin both surfaces share never installs.
+    // The agy-only and ide-only rows are the ones that matter: any single product root present must
+    // still detect, or the plugin all surfaces share never installs.
     [Test]
-    [Arguments(false, false, false)] // neither root
-    [Arguments(true,  false, true)]  // GUI only
-    [Arguments(false, true,  true)]  // agy CLI only
-    [Arguments(true,  true,  true)]  // both
-    public async Task HasUserData_is_true_when_EITHER_product_root_exists(
-            bool gui, bool cli, bool expected) {
+    [Arguments(false, false, false, false)] // no root
+    [Arguments(true,  false, false, true)]  // Antigravity 2.0 only
+    [Arguments(false, true,  false, true)]  // agy CLI only
+    [Arguments(false, false, true,  true)]  // IDE only
+    [Arguments(true,  true,  true,  true)]  // all three
+    public async Task HasUserData_is_true_when_ANY_product_root_exists(
+            bool gui, bool cli, bool ide, bool expected) {
         using var tmp = new TempDir();
         if (gui) tmp.CreateDir(".gemini", "antigravity");
         if (cli) tmp.CreateDir(".gemini", "antigravity-cli");
+        if (ide) tmp.CreateDir(".gemini", "antigravity-ide");
 
         await Assert.That(Agy(tmp.Path).Paths.HasUserData()).IsEqualTo(expected);
     }
 
     [Test]
-    public async Task CliConfigRoot_is_antigravity_cli_under_gemini_home() {
+    public async Task CliConfigRoot_and_IdeConfigRoot_are_under_gemini_home() {
         await Assert.That(Ags("/h", P).CliConfigRoot)
             .IsEqualTo(Path.Combine(GeminiRoot, "antigravity-cli"));
+        await Assert.That(Ags("/h", P).IdeConfigRoot)
+            .IsEqualTo(Path.Combine(GeminiRoot, "antigravity-ide"));
     }
 
-    // Import enumerates both roots, GUI first. Order is fixed so the log lines and any
-    // first-wins behaviour are deterministic.
+    // Import enumerates all three roots in a fixed order so logs and any first-wins behaviour are deterministic.
     [Test]
-    public async Task BrainProductRoots_are_gui_then_cli() {
+    public async Task BrainProductRoots_are_gui_then_cli_then_ide() {
         var roots = Ags("/h", P).BrainProductRoots;
-        await Assert.That(roots.Count).IsEqualTo(2);
+        await Assert.That(roots.Count).IsEqualTo(3);
         await Assert.That(roots[0]).IsEqualTo(Path.Combine(GeminiRoot, "antigravity"));
         await Assert.That(roots[1]).IsEqualTo(Path.Combine(GeminiRoot, "antigravity-cli"));
+        await Assert.That(roots[2]).IsEqualTo(Path.Combine(GeminiRoot, "antigravity-ide"));
     }
 
     // The root-explicit helpers must resolve under the given product root verbatim — this is what
